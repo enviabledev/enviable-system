@@ -379,6 +379,51 @@ reachable. A diverted asset returns; the system honestly records the diversion
 period in the unit's movement history. Whether an internally-used unit is then
 sold as "new" is a business and disclosure question, not a system one.
 
+## Canonical P2002 (unique-violation) detection
+
+`src/common/prisma-errors.ts` `isUniqueViolationOn(err, { index, fields })` is
+the ONE detector for Prisma P2002 unique-constraint violations. Every
+unique-violation rewrap to a 409 routes through it (SO line I-11, the active-PI
+index, the one-current-price index, the invoice-per-SO and waybill-per-DN
+indexes). Do not hand-roll a P2002 check.
+
+It handles both shapes because Prisma 6 reports `meta.target` as a
+**field-name array** (e.g. `["unitId"]`), NOT the index name. The helper matches
+the field array first and falls back to an index-name match. A detector that
+only checked the index name compiles, passes happy-path tests, and silently
+lets the violation surface as a 500.
+
+The lesson, which generalises: an invariant verification that only confirms the
+happy path does not exercise the error-handling path. The I-5 (active-PI) and
+one-current-price detectors were "verified" only in that the invariant held (the
+atomic supersede means a real P2002 never fired), so their 409-rewrap was dead
+code looking for the wrong meta shape. The first triggerable case
+(double-allocation, I-11) exposed it across all three. **Error-handling paths
+need a test that actually triggers the violation, not just happy-path invariant
+confirmation.** This matters directly for the M5 sync layer's unique-key intake
+enforcement: test it by triggering the violation, using `isUniqueViolationOn`.
+
+## PermissionsGuard is AND-only
+
+`@RequirePermissions(...)` requires the caller to hold ALL listed permissions
+(AND-semantics). There is no OR. When a route's intent is "permission A OR
+permission B", gate on the permission whose holders are the SUPERSET and note
+it inline. Example: the returns GET routes want "return.manage OR
+salesorder.read"; they gate on `salesorder.read` alone, because every
+return.manage holder also holds salesorder.read (verified in the seed), so the
+broader permission satisfies the OR. If a route ever needs true OR-of-permissions
+that no single permission's holder-set covers, that is a guard enhancement (an
+`@RequireAnyPermission` decorator), not something to fake through the AND guard.
+
+## ts-node service-level checks need --files
+
+A `ts-node` script that imports `AppModule` (e.g. to call a service method like
+`resolvePrice` directly) must run with `npx ts-node --files`. The
+`express-session` `SessionData` module augmentation (which types `session.userId`
+and friends) is an ambient `.d.ts` that `nest build` picks up via the tsconfig
+`include`, but `ts-node` does NOT load per-file without `--files`, so the import
+fails to typecheck. `nest build` is unaffected; this is a ts-node-only gotcha.
+
 ## Prisma raw-SQL column quoting
 
 `@@map` rewrites **table** names to snake_case. It does not rewrite columns. In
