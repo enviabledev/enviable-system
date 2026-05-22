@@ -1,8 +1,10 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { Principal } from '../auth/auth.service';
 import { CurrentUser, RequirePermissions } from '../common/decorators';
+import { CustomersReportQueryDto } from './dto/customers-report-query.dto';
 import { RevenueReportQueryDto } from './dto/revenue-report-query.dto';
 import { StocksReportQueryDto } from './dto/stocks-report-query.dto';
+import { CustomersReportService } from './customers-report.service';
 import { ReportsService } from './reports.service';
 import { RevenueReportService } from './revenue-report.service';
 
@@ -13,6 +15,7 @@ export class ReportsController {
   constructor(
     private readonly reports: ReportsService,
     private readonly revenue: RevenueReportService,
+    private readonly customers: CustomersReportService,
   ) {}
 
   // Read-only, not audited. @CurrentUser() is injected here to read the
@@ -45,5 +48,13 @@ export class ReportsController {
       query.topN,
       actor.permissions.includes(COST_VIEW_PERMISSION),
     );
+  }
+
+  // Read-only, not audited. Outstanding balance is a sales/AR figure (not cost
+  // data), so no cost gating here.
+  @Get('customers')
+  @RequirePermissions('report.customers')
+  customersReport(@Query() query: CustomersReportQueryDto) {
+    return this.customers.customersReport(query);
   }
 }
