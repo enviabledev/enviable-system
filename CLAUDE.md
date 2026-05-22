@@ -262,6 +262,38 @@ every test path until M4 Prompt 2 (pricing) ran as a `costdata.view` holder,
 which short-circuits the walk entirely. Any new interceptor or response
 transformer that recurses into objects has the same hazard.
 
+## Global interceptor order is `[CostVisibility, Audit]` and is verified
+
+The `APP_INTERCEPTOR` registration order in `app.module.ts` is, deliberately:
+
+```
+CostVisibilityInterceptor   (registered first)
+AuditInterceptor            (registered second)
+```
+
+This is counterintuitive and must not be swapped. NestJS runs interceptor
+response operators in REVERSE registration order: the last-registered
+interceptor transforms the response first (closest to the handler), the
+first-registered transforms last (outermost, closest to the client). The
+binding invariant is: the audit row must capture the FULL response while the
+client receives the cost-STRIPPED one (Invariant I-8; the audit log is the
+system of record and keeps full truth, privacy comes from gating `audit.read`,
+not from sanitising stored rows). To get that, `AuditInterceptor` must be inner
+(observes the full response first via its `tap`) and `CostVisibilityInterceptor`
+must be outer (strips last, so the client gets the stripped version). Inner =
+registered LAST, outer = registered FIRST, hence `[CostVisibility, Audit]`.
+
+This was proven empirically in M1: registering in the intuitive `[Audit, Cost]`
+order made the audit row for a non-cost caller capture the STRIPPED response
+(the exact failure the ordering exists to prevent). The `app.module.ts` comment
+carries the do-not-swap warning.
+
+Rule for any future global interceptor (M5 sync, observability, etc.) that must
+OBSERVE-then-TRANSFORM a response: reason in terms of the invariant ("what must
+see the full response, what must see the transformed one"), not array position,
+then place the observer LAST (inner) and the transformer FIRST (outer). Verify
+adversarially, do not trust the registration order at face value.
+
 ## SO state machine permits CANCELLED past release; the service is the gate
 
 `SO_STATE_TRANSITIONS` (`src/sales-orders/state-machine.ts`) lists
