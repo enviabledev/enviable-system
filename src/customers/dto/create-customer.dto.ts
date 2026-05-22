@@ -1,0 +1,43 @@
+import { CustomerStatus, CustomerType, Prisma } from '@prisma/client';
+import {
+  IsEmail,
+  IsEnum,
+  IsNotEmpty,
+  IsObject,
+  IsOptional,
+  IsString,
+} from 'class-validator';
+
+export class CreateCustomerDto {
+  @IsString()
+  @IsNotEmpty()
+  name!: string;
+
+  @IsOptional()
+  @IsEnum(CustomerType, { message: 'type is not a valid CustomerType' })
+  type?: CustomerType;
+
+  @IsOptional()
+  @IsString()
+  tierId?: string;
+
+  @IsOptional()
+  @IsString()
+  phone?: string;
+
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @IsOptional()
+  @IsObject()
+  address?: Prisma.InputJsonValue;
+
+  @IsOptional()
+  @IsString()
+  taxId?: string;
+
+  @IsOptional()
+  @IsEnum(CustomerStatus, { message: 'status is not a valid CustomerStatus' })
+  status?: CustomerStatus;
+}
