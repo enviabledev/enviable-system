@@ -7,6 +7,7 @@ import { SyncConflictsService } from './sync-conflicts.service';
 import { SyncController } from './sync.controller';
 import { SyncIdempotencyService } from './sync-idempotency.service';
 import { SyncMergeService } from './sync-merge.service';
+import { SyncPullService } from './sync-pull.service';
 import { SyncService } from './sync.service';
 
 @Module({
@@ -20,6 +21,7 @@ import { SyncService } from './sync.service';
     SyncActionsService,
     SyncMergeService,
     SyncConflictsService,
+    SyncPullService,
   ],
 })
 export class SyncModule {}

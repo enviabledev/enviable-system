@@ -13,8 +13,10 @@ import { AllocateIdRangeDto } from './dto/allocate-id-range.dto';
 import { QueryIdRangesDto } from './dto/query-id-ranges.dto';
 import { ResolveConflictDto } from './dto/resolve-conflict.dto';
 import { SyncBatchDto } from './dto/sync-batch.dto';
+import { SyncPullQueryDto } from './dto/sync-pull-query.dto';
 import { SyncActionsService } from './sync-actions.service';
 import { SyncConflictsService } from './sync-conflicts.service';
+import { SyncPullService } from './sync-pull.service';
 import { SyncService } from './sync.service';
 
 // Authenticated only (no @RequirePermissions): any authenticated user with a
@@ -28,7 +30,15 @@ export class SyncController {
     private readonly sync: SyncService,
     private readonly actions: SyncActionsService,
     private readonly conflicts: SyncConflictsService,
+    private readonly pullService: SyncPullService,
   ) {}
+
+  // Server-to-client delta. Authenticated; not audited. landedCost on pulled
+  // units is stripped for non-cost callers by the global cost interceptor (I-8).
+  @Get('pull')
+  pull(@Query() query: SyncPullQueryDto) {
+    return this.pullService.pull(query);
+  }
 
   // Writes userId, so it needs the principal.
   @Post('id-ranges')
