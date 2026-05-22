@@ -1,5 +1,15 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
-import { RequirePermissions } from '../common/decorators';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Query,
+} from '@nestjs/common';
+import { Principal } from '../auth/auth.service';
+import { Audit, CurrentUser, RequirePermissions } from '../common/decorators';
+import { AdjustUnitDto } from './dto/adjust-unit.dto';
 import { QueryUnitsDto } from './dto/query-units.dto';
 import { UnitsService } from './units.service';
 
@@ -21,5 +31,20 @@ export class UnitsController {
   @RequirePermissions('unit.read')
   findOne(@Param('idOrEngineNumber') idOrEngineNumber: string) {
     return this.units.findOne(idOrEngineNumber);
+  }
+
+  // IT-admin adjustment (damage, demo, internal-use, write-off, repair). Routes
+  // through transitionUnit (I-3); writes the movement actor, so it needs the
+  // principal.
+  @Post(':idOrEngineNumber/adjust')
+  @HttpCode(200)
+  @RequirePermissions('unit.adjust')
+  @Audit('unit.adjust', 'Unit')
+  adjust(
+    @Param('idOrEngineNumber') idOrEngineNumber: string,
+    @Body() dto: AdjustUnitDto,
+    @CurrentUser() actor: Principal,
+  ) {
+    return this.units.adjust(idOrEngineNumber, dto, actor.id);
   }
 }

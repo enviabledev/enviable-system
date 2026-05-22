@@ -62,8 +62,10 @@ export const UNIT_STATE_TRANSITIONS: Record<UnitStatus, UnitStatus[]> = {
     S.WRITTEN_OFF,
   ],
 
-  // Consumed internally: only a write-off remains.
-  [S.INTERNAL_USE]: [S.WRITTEN_OFF],
+  // In internal use: can be returned to sellable stock (as kit or assembled)
+  // or written off. The return is an IT-admin adjustment (internal-use
+  // round-trip), symmetric with DEMO.
+  [S.INTERNAL_USE]: [S.IN_WAREHOUSE_CKD, S.IN_WAREHOUSE_CBU, S.WRITTEN_OFF],
 
   // Transferred to another warehouse: arrives as stock at the destination.
   [S.TRANSFERRED]: [S.IN_WAREHOUSE_CKD, S.IN_WAREHOUSE_CBU],

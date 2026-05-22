@@ -1,7 +1,15 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { MovementReferenceType, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { adjustmentMovementType } from './adjustment-map';
+import { AdjustUnitDto } from './dto/adjust-unit.dto';
 import { QueryUnitsDto } from './dto/query-units.dto';
+import { transitionUnit } from './transition-unit';
+import { assertUnitTransition } from './unit-state-machine';
 
 const UNIT_LIST_SELECT = {
   id: true,
@@ -124,5 +132,52 @@ export class UnitsService {
       throw new NotFoundException(`Unit ${idOrEngineNumber} not found`);
     }
     return unit;
+  }
+
+  /**
+   * IT-admin adjustment: damage / demo / internal-use / write-off / repair, at
+   * MVP handled directly (no approval workflow). The transition must be legal
+   * per the state machine (409 if not) AND be an adjustment (400 if it is
+   * legal but belongs to a workflow). Performed through the single transitionUnit
+   * path so I-3 holds, with referenceType ADJUSTMENT and the reason on the
+   * movement notes. reason is enforced non-empty by the DTO.
+   */
+  async adjust(idOrEngineNumber: string, dto: AdjustUnitDto, actorId: string) {
+    const unit = await this.prisma.unit.findFirst({
+      where: {
+        OR: [{ id: idOrEngineNumber }, { engineNumber: idOrEngineNumber }],
+      },
+      select: { id: true, status: true },
+    });
+    if (!unit) {
+      throw new NotFoundException(`Unit ${idOrEngineNumber} not found`);
+    }
+
+    // Legal per the state machine? (409 otherwise.)
+    assertUnitTransition(unit.status, dto.toStatus);
+
+    // Legal AND an adjustment? (400 if legal-but-not-an-adjustment.)
+    const movementType = adjustmentMovementType(unit.status, dto.toStatus);
+    if (!movementType) {
+      throw new BadRequestException(
+        `Transition ${unit.status} to ${dto.toStatus} is legal but not an IT-admin adjustment. Use the appropriate workflow endpoint (assembly, sales, or returns).`,
+      );
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const { unit: updated, movement } = await transitionUnit(
+        tx,
+        unit.id,
+        dto.toStatus,
+        movementType,
+        {
+          actorId,
+          referenceType: MovementReferenceType.ADJUSTMENT,
+          notes: dto.reason,
+        },
+      );
+      // Top-level id is the unit id so the AuditInterceptor records it.
+      return { ...updated, movement };
+    });
   }
 }
