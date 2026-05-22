@@ -350,6 +350,24 @@ has no `cancellationReason` column on purpose: the audit log is the system
 of record for the why (immutable per I-10), and adding a column would
 duplicate that without buying anything.
 
+## Unit state machine: DEMO and INTERNAL_USE are round-trip states (ratified)
+
+DEMO and INTERNAL_USE both return to sellable stock by design. A unit pulled
+for a demo or for internal use is temporarily diverted, not consumed, so it can
+come back to IN_WAREHOUSE_CKD or IN_WAREHOUSE_CBU (or be written off). The
+unit-state machine (`src/units/unit-state-machine.ts`) therefore allows:
+
+- DEMO to [IN_WAREHOUSE_CKD, IN_WAREHOUSE_CBU, INTERNAL_USE, WRITTEN_OFF]
+- INTERNAL_USE to [IN_WAREHOUSE_CKD, IN_WAREHOUSE_CBU, WRITTEN_OFF]
+
+The return-to-warehouse legs are IT-admin adjustments (movement type RETURN).
+This is deliberate and ratified, not map drift: M3 Prompt 4 first modelled
+INTERNAL_USE as near-terminal (WRITTEN_OFF only), and Prompt 5 broadened it to
+mirror DEMO so the internal-use round-trip the adjustment set requires is
+reachable. A diverted asset returns; the system honestly records the diversion
+period in the unit's movement history. Whether an internally-used unit is then
+sold as "new" is a business and disclosure question, not a system one.
+
 ## Prisma raw-SQL column quoting
 
 `@@map` rewrites **table** names to snake_case. It does not rewrite columns. In
