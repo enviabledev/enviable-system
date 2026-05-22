@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { QueryUnitsDto } from './dto/query-units.dto';
@@ -62,5 +62,67 @@ export class UnitsService {
     ]);
 
     return { data, page: query.page, pageSize: query.pageSize, total };
+  }
+
+  /**
+   * Unit detail by cuid id OR engineNumber, with its full movement timeline
+   * (occurredAt ascending). The history is part of the unit's own record, so
+   * unit.read suffices (the cross-unit log is gated separately on movement.read).
+   * landedCost is left in for the global CostVisibilityInterceptor to strip.
+   */
+  async findOne(idOrEngineNumber: string) {
+    const unit = await this.prisma.unit.findFirst({
+      where: {
+        OR: [{ id: idOrEngineNumber }, { engineNumber: idOrEngineNumber }],
+      },
+      select: {
+        id: true,
+        engineNumber: true,
+        chassisNumber: true,
+        status: true,
+        createdAt: true,
+        assembledAt: true,
+        soldAt: true,
+        currentWarehouseId: true,
+        landedCost: true,
+        productVariant: {
+          select: {
+            id: true,
+            supplierSkuCode: true,
+            variantAttributes: true,
+            product: { select: { id: true, name: true } },
+          },
+        },
+        shipment: {
+          select: {
+            id: true,
+            shipmentReference: true,
+            status: true,
+            isHistoricalImport: true,
+          },
+        },
+        currentWarehouse: { select: { id: true, name: true } },
+        movements: {
+          orderBy: { occurredAt: 'asc' },
+          select: {
+            id: true,
+            movementType: true,
+            fromState: true,
+            toState: true,
+            fromWarehouseId: true,
+            toWarehouseId: true,
+            referenceType: true,
+            referenceId: true,
+            occurredAt: true,
+            notes: true,
+            actor: { select: { id: true, fullName: true } },
+          },
+        },
+      },
+    });
+    if (!unit) {
+      throw new NotFoundException(`Unit ${idOrEngineNumber} not found`);
+    }
+    return unit;
   }
 }

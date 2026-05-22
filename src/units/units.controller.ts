@@ -1,4 +1,4 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Param, Query } from '@nestjs/common';
 import { RequirePermissions } from '../common/decorators';
 import { QueryUnitsDto } from './dto/query-units.dto';
 import { UnitsService } from './units.service';
@@ -13,5 +13,13 @@ export class UnitsController {
   @RequirePermissions('unit.read')
   findAll(@Query() query: QueryUnitsDto) {
     return this.units.findAll(query);
+  }
+
+  // Accepts either the cuid id or the engineNumber. Includes the unit's own
+  // movement timeline (unit.read suffices for a unit's own history).
+  @Get(':idOrEngineNumber')
+  @RequirePermissions('unit.read')
+  findOne(@Param('idOrEngineNumber') idOrEngineNumber: string) {
+    return this.units.findOne(idOrEngineNumber);
   }
 }

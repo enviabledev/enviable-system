@@ -10,13 +10,12 @@ import {
   IsString,
   Min,
 } from 'class-validator';
+import { ALLOWED_PAGE_SIZES } from '../../common/pagination';
 
 // Express gives a repeated query param as an array and a single one as a
 // scalar. Normalise both to an array (or undefined when absent).
 const toArray = ({ value }: { value: unknown }): unknown =>
   value === undefined ? undefined : Array.isArray(value) ? value : [value];
-
-export const ALLOWED_PAGE_SIZES = [25, 50, 100, 250];
 
 export class QueryUnitsDto {
   @IsOptional()
