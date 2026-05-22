@@ -9,6 +9,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
+import { Public } from '../common/decorators';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 
@@ -18,6 +19,7 @@ export const SESSION_COOKIE_NAME = 'enviable.sid';
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
+  @Public()
   @Post('login')
   @HttpCode(200)
   async login(@Body() dto: LoginDto, @Req() req: Request) {
@@ -55,6 +57,7 @@ export class AuthController {
     return principal;
   }
 
+  @Public()
   @Post('logout')
   @HttpCode(200)
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
