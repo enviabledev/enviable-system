@@ -17,6 +17,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { ProductsModule } from './products/products.module';
 import { ProformaInvoicesModule } from './proforma-invoices/proforma-invoices.module';
 import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
+import { ReturnsModule } from './returns/returns.module';
 import { SalesOrdersModule } from './sales-orders/sales-orders.module';
 import { ShipmentsModule } from './shipments/shipments.module';
 import { SparePartsModule } from './spare-parts/spare-parts.module';
@@ -43,6 +44,7 @@ import { UnitsModule } from './units/units.module';
     PricingModule,
     SalesOrdersModule,
     PaymentsModule,
+    ReturnsModule,
   ],
   providers: [
     // Global guards execute in registration order. AuthGuard MUST be first: it
