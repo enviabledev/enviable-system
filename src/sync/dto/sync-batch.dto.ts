@@ -16,6 +16,7 @@ export enum SyncActionType {
   ASSEMBLY_START = 'assembly.start',
   ASSEMBLY_COMPLETE = 'assembly.complete',
   SALES_ORDER_CREATE = 'salesorder.create',
+  ENTITY_UPDATE = 'entity.update',
 }
 
 export class SyncActionDto {

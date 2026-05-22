@@ -5,6 +5,7 @@ import { ShipmentsModule } from '../shipments/shipments.module';
 import { SyncActionsService } from './sync-actions.service';
 import { SyncController } from './sync.controller';
 import { SyncIdempotencyService } from './sync-idempotency.service';
+import { SyncMergeService } from './sync-merge.service';
 import { SyncService } from './sync.service';
 
 @Module({
@@ -12,6 +13,11 @@ import { SyncService } from './sync.service';
   // an idempotent intake wrapper, not a reimplementation.
   imports: [ShipmentsModule, AssemblyModule, SalesOrdersModule],
   controllers: [SyncController],
-  providers: [SyncService, SyncIdempotencyService, SyncActionsService],
+  providers: [
+    SyncService,
+    SyncIdempotencyService,
+    SyncActionsService,
+    SyncMergeService,
+  ],
 })
 export class SyncModule {}

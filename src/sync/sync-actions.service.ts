@@ -12,17 +12,29 @@ import {
   AssemblyStartPayloadDto,
   UnitReceiptPayloadDto,
 } from './dto/sync-payloads.dto';
+import { UpdateEntityPayloadDto } from './dto/update-entity.dto';
+import { FieldCollision, SyncMergeService } from './sync-merge.service';
+import { detectUniqueField, SyncUniqueConflictError } from './sync-conflicts';
 import { SyncIdempotencyService } from './sync-idempotency.service';
 
 const DISCOUNT_PERMISSION = 'salesorder.discount';
 
+export type SyncConflict =
+  | { kind: 'unique'; field: string; value: unknown }
+  | { kind: 'field-collision'; fields: FieldCollision[] };
+
 export interface ActionResult {
   clientId: string;
   type: string;
-  status: 'processed' | 'duplicate' | 'error';
+  status: 'processed' | 'duplicate' | 'error' | 'conflict';
   resultRef?: string | null;
+  applied?: string[];
+  conflict?: SyncConflict;
   error?: string;
 }
+
+// What a dispatch returns before clientId/type are attached.
+type DispatchResult = Omit<ActionResult, 'clientId' | 'type'>;
 
 /**
  * Validate a plain payload against a module DTO. A failure throws
@@ -54,6 +66,7 @@ export class SyncActionsService {
     private readonly shipments: ShipmentsService,
     private readonly assembly: AssemblyService,
     private readonly salesOrders: SalesOrdersService,
+    private readonly merge: SyncMergeService,
   ) {}
 
   /**
@@ -73,27 +86,52 @@ export class SyncActionsService {
         results.push({
           clientId: action.clientId,
           type: action.type,
-          status: outcome.status,
-          resultRef: outcome.resultRef,
+          ...outcome,
         });
       } catch (err) {
         results.push({
           clientId: action.clientId,
           type: action.type,
-          status: 'error',
-          error: err instanceof Error ? err.message : String(err),
+          ...this.classifyError(err),
         });
       }
     }
     return { results };
   }
 
-  private async dispatch(action: SyncActionDto, principal: Principal) {
+  // Mechanism 2: a unique-constraint violation surfaced through sync becomes a
+  // structured conflict (offending field and value), never a crashed batch or a
+  // 500. A SyncUniqueConflictError carries field/value directly; a raw P2002 is
+  // matched defensively via the canonical isUniqueViolationOn helper.
+  private classifyError(err: unknown): DispatchResult {
+    if (err instanceof SyncUniqueConflictError) {
+      return {
+        status: 'conflict',
+        conflict: { kind: 'unique', field: err.field, value: err.value },
+      };
+    }
+    const field = detectUniqueField(err);
+    if (field) {
+      return {
+        status: 'conflict',
+        conflict: { kind: 'unique', field, value: null },
+      };
+    }
+    return {
+      status: 'error',
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  private async dispatch(
+    action: SyncActionDto,
+    principal: Principal,
+  ): Promise<DispatchResult> {
     const { clientId, type, payload } = action;
     switch (type) {
       case SyncActionType.UNIT_RECEIPT: {
         const dto = await asDto(UnitReceiptPayloadDto, payload);
-        return this.idempotency.process(
+        const outcome = await this.idempotency.process(
           clientId,
           type,
           principal.id,
@@ -105,37 +143,66 @@ export class SyncActionsService {
             ),
           (shipment) => shipment?.id ?? null,
         );
+        return { status: outcome.status, resultRef: outcome.resultRef };
       }
       case SyncActionType.ASSEMBLY_START: {
         const dto = await asDto(AssemblyStartPayloadDto, payload);
-        return this.idempotency.process(
+        const outcome = await this.idempotency.process(
           clientId,
           type,
           principal.id,
           () => this.assembly.startAssembly(dto.unitRefs, principal.id),
           (jobs) => jobs.map((j) => j.id).join(','),
         );
+        return { status: outcome.status, resultRef: outcome.resultRef };
       }
       case SyncActionType.ASSEMBLY_COMPLETE: {
         const dto = await asDto(AssemblyCompletePayloadDto, payload);
-        return this.idempotency.process(
+        const outcome = await this.idempotency.process(
           clientId,
           type,
           principal.id,
           () => this.assembly.complete(dto.jobId, principal.id),
           (job) => job.id,
         );
+        return { status: outcome.status, resultRef: outcome.resultRef };
       }
       case SyncActionType.SALES_ORDER_CREATE: {
         const dto = await asDto(CreateSalesOrderDto, payload);
         const canDiscount = principal.permissions.includes(DISCOUNT_PERMISSION);
-        return this.idempotency.process(
+        const outcome = await this.idempotency.process(
           clientId,
           type,
           principal.id,
           () => this.salesOrders.create(dto, principal.id, canDiscount),
           (so) => so.id,
         );
+        return { status: outcome.status, resultRef: outcome.resultRef };
+      }
+      case SyncActionType.ENTITY_UPDATE: {
+        const dto = await asDto(UpdateEntityPayloadDto, payload);
+        const outcome = await this.idempotency.process(
+          clientId,
+          type,
+          principal.id,
+          () => this.merge.applyFieldMerge(dto, principal.id),
+          (r) => r.recordId,
+        );
+        if (outcome.status === 'duplicate') {
+          return { status: 'duplicate', resultRef: outcome.resultRef };
+        }
+        // Clean fields were applied. Any same-field collisions are flagged as a
+        // conflict (not overwritten); the next prompt's policy resolves them.
+        const { applied, collisions } = outcome.result;
+        if (collisions.length > 0) {
+          return {
+            status: 'conflict',
+            resultRef: outcome.resultRef,
+            applied,
+            conflict: { kind: 'field-collision', fields: collisions },
+          };
+        }
+        return { status: 'processed', resultRef: outcome.resultRef, applied };
       }
       default: {
         // Unreachable: the DTO enum already constrains type. Defensive.
