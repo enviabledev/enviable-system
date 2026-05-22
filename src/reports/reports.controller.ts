@@ -1,9 +1,15 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { Principal } from '../auth/auth.service';
-import { CurrentUser, RequirePermissions } from '../common/decorators';
+import {
+  CurrentUser,
+  RequirePermissions,
+  SkipCostStrip,
+} from '../common/decorators';
+import { AuditLogQueryDto } from './dto/audit-log-query.dto';
 import { CustomersReportQueryDto } from './dto/customers-report-query.dto';
 import { RevenueReportQueryDto } from './dto/revenue-report-query.dto';
 import { StocksReportQueryDto } from './dto/stocks-report-query.dto';
+import { AuditLogReportService } from './audit-log-report.service';
 import { CustomersReportService } from './customers-report.service';
 import { ReportsService } from './reports.service';
 import { RevenueReportService } from './revenue-report.service';
@@ -16,6 +22,7 @@ export class ReportsController {
     private readonly reports: ReportsService,
     private readonly revenue: RevenueReportService,
     private readonly customers: CustomersReportService,
+    private readonly auditLogReport: AuditLogReportService,
   ) {}
 
   // Read-only, not audited. @CurrentUser() is injected here to read the
@@ -56,5 +63,24 @@ export class ReportsController {
   @RequirePermissions('report.customers')
   customersReport(@Query() query: CustomersReportQueryDto) {
     return this.customers.customersReport(query);
+  }
+
+  // Most sensitive read. @SkipCostStrip(): the audit log is the immutable system
+  // of record and must return the COMPLETE entry (cost data in afterState
+  // included) to any audit.read holder, even one lacking costdata.view. Privacy
+  // comes from gating audit.read (I-8 design). Not @Audit-annotated, so reading
+  // the audit log is not itself audited (no recursion).
+  @Get('audit-log')
+  @RequirePermissions('audit.read')
+  @SkipCostStrip()
+  auditLog(@Query() query: AuditLogQueryDto) {
+    return this.auditLogReport.list(query);
+  }
+
+  @Get('audit-log/stats')
+  @RequirePermissions('audit.read')
+  @SkipCostStrip()
+  auditLogStats(@Query() query: AuditLogQueryDto) {
+    return this.auditLogReport.stats(query);
   }
 }
