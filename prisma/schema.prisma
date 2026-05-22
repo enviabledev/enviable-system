@@ -1,0 +1,1329 @@
+// ============================================================================
+// Enviable Inventory & Operations System
+// Prisma Schema, MVP (fresh build)
+//
+// Direct translation of the Domain Model into the database layer. Encodes
+// entities, relations, state machines (as enums), and the invariants
+// (I-1 .. I-15) wherever the database can enforce them.
+//
+// FOLDED-IN CHANGES versus the prior build:
+//  - SalesOrder gains cancellationReason / cancelledAt / cancelledById so
+//    cancellation metadata lives on the entity, not only in the audit log.
+//  - SparePartMovement gains an actor (User) relation so spare-part history
+//    can resolve the actor name, consistent with unit StockMovements.
+//
+// NOT included (deliberately):
+//  - Warranty fields: pending Theresa's contractual answers; land as a later
+//    migration once the clock model (single vs supplier+customer) is confirmed.
+//  - Per-field snake_case @map: columns stay camelCase by decision. Raw SQL
+//    therefore quotes camelCase column names (e.g. "purchaseOrderId").
+//
+// NOTES:
+//  - Run prisma format then prisma validate after placing this file.
+//  - Some invariants need raw-SQL migrations (partial unique indexes); see the
+//    invariant migration. REVOKE-based immutability is deferred to M5 hardening.
+//  - Money is Decimal(18,2) with a separate currency column. Never Float.
+//  - Internal PKs are cuid() so offline devices generate non-colliding IDs.
+//    Human-facing identifiers are separate unique columns.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum CounterpartyType {
+  MANUFACTURER
+  SUPPLIER
+  CLEARING_AGENT
+  FREIGHT_FORWARDER
+  INSURANCE_COMPANY
+  BANK
+}
+
+enum CounterpartyStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  SENT_TO_SUPPLIER
+  PI_RECEIVED
+  AWAITING_SHIPMENT
+  PARTIALLY_RECEIVED
+  FULLY_RECEIVED
+  CLOSED
+  CANCELLED
+}
+
+enum ProformaInvoiceStatus {
+  PENDING_REVIEW
+  ACTIVE
+  SUPERSEDED
+  REJECTED
+}
+
+enum LetterOfCreditStatus {
+  DRAFTED
+  APPLIED
+  ISSUED
+  PRESENTED
+  SETTLED
+  EXPIRED
+}
+
+enum ShipmentStatus {
+  IN_TRANSIT
+  AT_PORT
+  CLEARING
+  CLEARED
+  RECEIVED
+  CLOSED
+}
+
+enum LandedCostComponentType {
+  FREIGHT
+  MARINE_INSURANCE
+  CUSTOMS_DUTY
+  PORT_CHARGES
+  CLEARING_FEES
+  INLAND_TRANSPORT
+  OTHER
+}
+
+enum LandedCostStatus {
+  ESTIMATED
+  ACTUAL
+  RECONCILED
+}
+
+enum LandedCostAllocationMethod {
+  EQUAL_PER_UNIT
+  WEIGHTED_BY_VALUE
+  MANUAL
+}
+
+enum ForwarderInvoiceStatus {
+  PENDING
+  RECONCILED
+  DISPUTED
+  PAID
+}
+
+enum ProductCategory {
+  PASSENGER
+  CARGO
+}
+
+enum ProductStatus {
+  ACTIVE
+  DISCONTINUED
+}
+
+enum UnitStatus {
+  IN_TRANSIT
+  IN_WAREHOUSE_CKD
+  IN_ASSEMBLY
+  IN_WAREHOUSE_CBU
+  SOLD_AS_CKD
+  SOLD_AS_CBU
+  DAMAGED
+  IN_REPAIR
+  DEMO
+  INTERNAL_USE
+  TRANSFERRED
+  RETURNED
+  WRITTEN_OFF
+}
+
+enum MovementType {
+  RECEIPT
+  ASSEMBLY_START
+  ASSEMBLY_COMPLETE
+  SALE
+  RETURN
+  DAMAGE
+  WRITE_OFF
+  DEMO
+  INTERNAL_USE
+  TRANSFER
+  REPAIR_IN
+  REPAIR_OUT
+  RESTOCK_FROM_REPAIR
+  ADJUSTMENT
+}
+
+enum MovementReferenceType {
+  SHIPMENT
+  SALES_ORDER
+  ASSEMBLY_JOB
+  RETURN
+  ADJUSTMENT
+  TRANSFER
+}
+
+enum WarehouseStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum SparePartMovementType {
+  RECEIPT
+  ADJUSTMENT
+}
+
+enum AssemblyJobStatus {
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum CustomerType {
+  END_USER
+  RESELLER
+}
+
+enum CustomerStatus {
+  ACTIVE
+  INACTIVE
+  BLOCKED
+}
+
+enum CustomerTierStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum SalesChannel {
+  WAREHOUSE_PICKUP
+  RETAIL_POS
+}
+
+enum SalesOrderStatus {
+  DRAFT
+  AWAITING_PAYMENT
+  PAYMENT_RECEIVED
+  RELEASE_AUTHORISED
+  PICKING
+  READY_FOR_DISPATCH
+  DISPATCHED
+  DELIVERED
+  CLOSED
+  CANCELLED
+  REFUNDED
+}
+
+enum SaleForm {
+  CKD
+  CBU
+}
+
+enum PaymentMethodType {
+  BANK_TRANSFER
+  POS_TERMINAL
+}
+
+enum PaymentConfirmationSource {
+  WEBHOOK
+  MANUAL_UPLOAD
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
+  REJECTED
+}
+
+enum PosReconciliationStatus {
+  MATCHED
+  UNMATCHED
+  DISPUTED
+}
+
+enum ReturnDisposition {
+  PENDING_DECISION
+  REPAIR
+  WRITE_OFF
+}
+
+enum ReturnStatus {
+  INITIATED
+  INSPECTING
+  RESOLVED
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  INACTIVE
+}
+
+enum ApprovalRuleStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ApprovalRequestStatus {
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum ApprovalDecisionType {
+  APPROVED
+  REJECTED
+  DEFERRED
+}
+
+enum DocumentAccessCategory {
+  PROCUREMENT
+  SALES
+  HR
+  PUBLIC
+}
+
+enum PeriodSnapshotStatus {
+  LOCKED
+}
+
+enum ConflictStatus {
+  OPEN
+  RESOLVED
+  REJECTED
+}
+
+// ============================================================================
+// IDENTITY & ACCESS
+// ============================================================================
+
+model User {
+  id              String     @id @default(cuid())
+  fullName        String
+  email           String     @unique
+  phone           String?
+  passwordHash    String
+  status          UserStatus @default(ACTIVE)
+  reportsToUserId String?
+  reportsTo       User?      @relation("UserReports", fields: [reportsToUserId], references: [id])
+  reports         User[]     @relation("UserReports")
+  lastLoginAt     DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  deletedAt       DateTime?
+
+  userRoles             UserRole[]
+  auditEntries          AuditLogEntry[]        @relation("AuditActor")
+  approvalDecisions     ApprovalDecision[]
+  initiatedApprovals    ApprovalRequest[]      @relation("ApprovalInitiator")
+  approvalStepRules     ApprovalStepRule[]     @relation("ApprovalStepRequiredUser")
+  uploadedDocuments     Document[]
+  createdSalesOrders    SalesOrder[]           @relation("SalesOrderCreatedBy")
+  cancelledSalesOrders  SalesOrder[]           @relation("SalesOrderCancelledBy")
+  approvedProformas     ProformaInvoice[]      @relation("ProformaApprovedBy")
+  assembledUnits        Unit[]                 @relation("UnitAssembledBy")
+  supervisedJobs        AssemblyJob[]          @relation("AssemblyJobSupervisor")
+  movementsActed        StockMovement[]        @relation("MovementActor")
+  sparePartMovements    SparePartMovement[]    @relation("SparePartMovementActor")
+  priceListEntries      PriceListEntry[]
+  releaseAuthorisations ReleaseAuthorisation[]
+  resolvedConflicts     ConflictReviewItem[]   @relation("ConflictResolver")
+  idRangeAllocations    IdRangeAllocation[]
+
+  @@index([reportsToUserId])
+  @@index([status])
+  @@map("users")
+}
+
+model Role {
+  id           String   @id @default(cuid())
+  name         String   @unique
+  description  String?
+  isSystemRole Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  userRoles         UserRole[]
+  rolePermissions   RolePermission[]
+  approvalStepRules ApprovalStepRule[] @relation("ApprovalStepRequiredRole")
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String  @id @default(cuid())
+  key         String  @unique
+  description String?
+  category    String?
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model UserRole {
+  id         String   @id @default(cuid())
+  userId     String
+  roleId     String
+  assignedAt DateTime @default(now())
+  assignedBy String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+model RolePermission {
+  id           String @id @default(cuid())
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+// ============================================================================
+// COUNTERPARTIES
+// ============================================================================
+
+model Counterparty {
+  id          String             @id @default(cuid())
+  name        String
+  type        CounterpartyType
+  contact     Json?
+  bankDetails Json?
+  status      CounterpartyStatus @default(ACTIVE)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  deletedAt   DateTime?
+
+  purchaseOrdersAsSupplier PurchaseOrder[]    @relation("PoSupplier")
+  productsAsManufacturer   Product[]          @relation("ProductManufacturer")
+  shipmentsAsForwarder     Shipment[]         @relation("ShipmentForwarder")
+  shipmentsAsClearer       Shipment[]         @relation("ShipmentClearer")
+  shipmentsAsInsurer       Shipment[]         @relation("ShipmentInsurer")
+  landedCosts              LandedCost[]
+  forwarderInvoices        ForwarderInvoice[]
+  lcAsIssuingBank          LetterOfCredit[]   @relation("LcIssuingBank")
+  lcAsBeneficiaryBank      LetterOfCredit[]   @relation("LcBeneficiaryBank")
+
+  @@index([type])
+  @@index([status])
+  @@map("counterparties")
+}
+
+// ============================================================================
+// PROCUREMENT
+// ============================================================================
+
+model PurchaseOrder {
+  id                String              @id @default(cuid())
+  poNumber          String              @unique
+  supplierPortalRef String?
+  supplierId        String
+  status            PurchaseOrderStatus @default(DRAFT)
+  currency          String
+  totalValue        Decimal             @db.Decimal(18, 2)
+  expectedShipDate  DateTime?
+  paymentTerms      String?
+  closedAt          DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  deletedAt         DateTime?
+
+  supplier         Counterparty        @relation("PoSupplier", fields: [supplierId], references: [id])
+  lines            PurchaseOrderLine[]
+  proformaInvoices ProformaInvoice[]
+  letterOfCredit   LetterOfCredit?
+  shipments        Shipment[]
+
+  @@index([supplierId])
+  @@index([status])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderLine {
+  id               String  @id @default(cuid())
+  purchaseOrderId  String
+  productVariantId String
+  quantityOrdered  Int
+  unitPrice        Decimal @db.Decimal(18, 2)
+
+  purchaseOrder  PurchaseOrder  @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+
+  @@index([purchaseOrderId])
+  @@index([productVariantId])
+  @@map("purchase_order_lines")
+}
+
+model ProformaInvoice {
+  id              String                @id @default(cuid())
+  purchaseOrderId String
+  piNumber        String
+  revisionNumber  Int                   @default(0)
+  issueDate       DateTime?
+  validityUntil   DateTime?
+  status          ProformaInvoiceStatus @default(PENDING_REVIEW)
+  approvedById    String?
+  approvedAt      DateTime?
+  totalValue      Decimal               @db.Decimal(18, 2)
+  freightAmount   Decimal               @default(0) @db.Decimal(18, 2)
+  insuranceAmount Decimal               @default(0) @db.Decimal(18, 2)
+  paymentTerms    String?
+  portOfLoading   String?
+  portOfDischarge String?
+  rawDocumentId   String?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  purchaseOrder PurchaseOrder         @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  approvedBy    User?                 @relation("ProformaApprovedBy", fields: [approvedById], references: [id])
+  rawDocument   Document?             @relation(fields: [rawDocumentId], references: [id])
+  lines         ProformaInvoiceLine[]
+
+  @@unique([purchaseOrderId, piNumber, revisionNumber])
+  @@index([purchaseOrderId])
+  @@index([status])
+  @@map("proforma_invoices")
+}
+
+model ProformaInvoiceLine {
+  id                String  @id @default(cuid())
+  proformaInvoiceId String
+  productVariantId  String
+  quantity          Int
+  unitPrice         Decimal @db.Decimal(18, 2)
+  lineTotal         Decimal @db.Decimal(18, 2)
+
+  proformaInvoice ProformaInvoice @relation(fields: [proformaInvoiceId], references: [id], onDelete: Cascade)
+  productVariant  ProductVariant  @relation(fields: [productVariantId], references: [id])
+
+  @@index([proformaInvoiceId])
+  @@index([productVariantId])
+  @@map("proforma_invoice_lines")
+}
+
+model LetterOfCredit {
+  id                     String               @id @default(cuid())
+  purchaseOrderId        String               @unique
+  lcNumber               String?
+  issuingBankId          String?
+  beneficiaryBankId      String?
+  amount                 Decimal              @db.Decimal(18, 2)
+  currency               String
+  issueDate              DateTime?
+  expiryDate             DateTime?
+  presentationPeriodDays Int?
+  presentationDate       DateTime?
+  settlementDate         DateTime?
+  status                 LetterOfCreditStatus @default(DRAFTED)
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  issuingBank     Counterparty? @relation("LcIssuingBank", fields: [issuingBankId], references: [id])
+  beneficiaryBank Counterparty? @relation("LcBeneficiaryBank", fields: [beneficiaryBankId], references: [id])
+
+  @@map("letters_of_credit")
+}
+
+model Shipment {
+  id                 String         @id @default(cuid())
+  purchaseOrderId    String
+  shipmentReference  String         @unique
+  billOfLadingNumber String?
+  vesselName         String?
+  etd                DateTime?
+  eta                DateTime?
+  arrivalDate        DateTime?
+  clearingStartedAt  DateTime?
+  clearedAt          DateTime?
+  receivedAt         DateTime?
+  status             ShipmentStatus @default(IN_TRANSIT)
+  freightForwarderId String?
+  clearingAgentId    String?
+  insuranceCompanyId String?
+  isHistoricalImport Boolean        @default(false)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  purchaseOrder    PurchaseOrder     @relation(fields: [purchaseOrderId], references: [id])
+  freightForwarder Counterparty?     @relation("ShipmentForwarder", fields: [freightForwarderId], references: [id])
+  clearingAgent    Counterparty?     @relation("ShipmentClearer", fields: [clearingAgentId], references: [id])
+  insuranceCompany Counterparty?     @relation("ShipmentInsurer", fields: [insuranceCompanyId], references: [id])
+  manifestLines    ManifestLine[]
+  landedCosts      LandedCost[]
+  forwarderInvoice ForwarderInvoice?
+  units            Unit[]
+
+  @@index([purchaseOrderId])
+  @@index([status])
+  @@map("shipments")
+}
+
+model ManifestLine {
+  id                 String    @id @default(cuid())
+  shipmentId         String
+  productVariantId   String
+  quantityDeclared   Int
+  quantityReceived   Int       @default(0)
+  variance           Int       @default(0)
+  varianceReason     String?
+  varianceResolvedAt DateTime?
+
+  shipment       Shipment       @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+
+  @@index([shipmentId])
+  @@index([productVariantId])
+  @@map("manifest_lines")
+}
+
+model LandedCost {
+  id                 String                     @id @default(cuid())
+  shipmentId         String
+  componentType      LandedCostComponentType
+  counterpartyId     String?
+  amount             Decimal                    @db.Decimal(18, 2)
+  currency           String
+  exchangeRateToBase Decimal?                   @db.Decimal(18, 6)
+  allocationMethod   LandedCostAllocationMethod @default(EQUAL_PER_UNIT)
+  status             LandedCostStatus           @default(ESTIMATED)
+  invoiceDocumentId  String?
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+
+  shipment        Shipment      @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  counterparty    Counterparty? @relation(fields: [counterpartyId], references: [id])
+  invoiceDocument Document?     @relation(fields: [invoiceDocumentId], references: [id])
+
+  @@index([shipmentId])
+  @@map("landed_costs")
+}
+
+model ForwarderInvoice {
+  id              String                 @id @default(cuid())
+  shipmentId      String                 @unique
+  forwarderId     String?
+  invoiceNumber   String?
+  invoiceDate     DateTime?
+  amountInvoiced  Decimal                @db.Decimal(18, 2)
+  amountEstimated Decimal                @db.Decimal(18, 2)
+  variance        Decimal                @default(0) @db.Decimal(18, 2)
+  status          ForwarderInvoiceStatus @default(PENDING)
+  rawDocumentId   String?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  shipment    Shipment      @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  forwarder   Counterparty? @relation(fields: [forwarderId], references: [id])
+  rawDocument Document?     @relation(fields: [rawDocumentId], references: [id])
+
+  @@map("forwarder_invoices")
+}
+
+// ============================================================================
+// INVENTORY: PRODUCTS, VARIANTS, UNITS
+// ============================================================================
+
+model Product {
+  id             String          @id @default(cuid())
+  name           String
+  manufacturerId String?
+  category       ProductCategory @default(PASSENGER)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  manufacturer Counterparty?    @relation("ProductManufacturer", fields: [manufacturerId], references: [id])
+  variants     ProductVariant[]
+
+  @@index([manufacturerId])
+  @@map("products")
+}
+
+model ProductVariant {
+  id                 String        @id @default(cuid())
+  productId          String
+  variantAttributes  Json
+  supplierSkuCode    String
+  currentMarketPrice Decimal       @db.Decimal(18, 2)
+  status             ProductStatus @default(ACTIVE)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  product              Product               @relation(fields: [productId], references: [id])
+  units                Unit[]
+  purchaseOrderLines   PurchaseOrderLine[]
+  proformaInvoiceLines ProformaInvoiceLine[]
+  manifestLines        ManifestLine[]
+  priceListEntries     PriceListEntry[]
+  salesOrderLines      SalesOrderLine[]
+  stockValuationLines  StockValuationLine[]
+
+  @@index([productId])
+  @@index([supplierSkuCode])
+  @@index([status])
+  @@map("product_variants")
+}
+
+model Unit {
+  id                 String     @id @default(cuid())
+  productVariantId   String
+  shipmentId         String
+  engineNumber       String     @unique
+  chassisNumber      String     @unique
+  status             UnitStatus @default(IN_TRANSIT)
+  currentWarehouseId String?
+  landedCost         Decimal?   @db.Decimal(18, 2)
+  assembledAt        DateTime?
+  assembledById      String?
+  soldAt             DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  productVariant   ProductVariant   @relation(fields: [productVariantId], references: [id])
+  shipment         Shipment         @relation(fields: [shipmentId], references: [id])
+  currentWarehouse Warehouse?       @relation(fields: [currentWarehouseId], references: [id])
+  assembledBy      User?            @relation("UnitAssembledBy", fields: [assembledById], references: [id])
+  movements        StockMovement[]
+  assemblyJob      AssemblyJob?
+  salesOrderLines  SalesOrderLine[]
+  returns          Return[]
+
+  @@index([productVariantId])
+  @@index([shipmentId])
+  @@index([status])
+  @@index([currentWarehouseId])
+  @@map("units")
+}
+
+model Warehouse {
+  id        String          @id @default(cuid())
+  name      String
+  address   Json?
+  status    WarehouseStatus @default(ACTIVE)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  units               Unit[]
+  movementsFrom       StockMovement[]      @relation("MovementFromWarehouse")
+  movementsTo         StockMovement[]      @relation("MovementToWarehouse")
+  stockValuationLines StockValuationLine[]
+
+  @@map("warehouses")
+}
+
+model StockMovement {
+  id              String                 @id @default(cuid())
+  unitId          String
+  movementType    MovementType
+  fromState       String?
+  toState         String?
+  fromWarehouseId String?
+  toWarehouseId   String?
+  referenceType   MovementReferenceType?
+  referenceId     String?
+  actorId         String
+  occurredAt      DateTime               @default(now())
+  clientTimestamp DateTime?
+  clientId        String?                @unique
+  notes           String?
+
+  unit          Unit       @relation(fields: [unitId], references: [id])
+  actor         User       @relation("MovementActor", fields: [actorId], references: [id])
+  fromWarehouse Warehouse? @relation("MovementFromWarehouse", fields: [fromWarehouseId], references: [id])
+  toWarehouse   Warehouse? @relation("MovementToWarehouse", fields: [toWarehouseId], references: [id])
+
+  @@index([unitId])
+  @@index([movementType])
+  @@index([occurredAt])
+  @@map("stock_movements")
+}
+
+// ============================================================================
+// SPARE PARTS (quantity-tracked, received and stored only at MVP)
+// ============================================================================
+
+model SparePart {
+  id                String        @id @default(cuid())
+  sku               String        @unique
+  name              String
+  description       String?
+  quantityOnHand    Int           @default(0)
+  landedCostPerUnit Decimal?      @db.Decimal(18, 2)
+  status            ProductStatus @default(ACTIVE)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  movements SparePartMovement[]
+
+  @@map("spare_parts")
+}
+
+model SparePartMovement {
+  id            String                 @id @default(cuid())
+  sparePartId   String
+  movementType  SparePartMovementType
+  quantity      Int
+  referenceType MovementReferenceType?
+  referenceId   String?
+  actorId       String?
+  occurredAt    DateTime               @default(now())
+  clientId      String?                @unique
+  notes         String?
+
+  sparePart SparePart @relation(fields: [sparePartId], references: [id])
+  actor     User?     @relation("SparePartMovementActor", fields: [actorId], references: [id])
+
+  @@index([sparePartId])
+  @@index([actorId])
+  @@map("spare_part_movements")
+}
+
+// ============================================================================
+// ASSEMBLY
+// ============================================================================
+
+model AssemblyJob {
+  id           String            @id @default(cuid())
+  unitId       String            @unique
+  startedAt    DateTime?
+  completedAt  DateTime?
+  supervisorId String?
+  status       AssemblyJobStatus @default(IN_PROGRESS)
+  notes        String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  unit       Unit  @relation(fields: [unitId], references: [id])
+  supervisor User? @relation("AssemblyJobSupervisor", fields: [supervisorId], references: [id])
+
+  @@map("assembly_jobs")
+}
+
+// ============================================================================
+// SALES
+// ============================================================================
+
+model CustomerTier {
+  id          String             @id @default(cuid())
+  name        String             @unique
+  description String?
+  status      CustomerTierStatus @default(ACTIVE)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  customers        Customer[]
+  priceListEntries PriceListEntry[]
+
+  @@map("customer_tiers")
+}
+
+model Customer {
+  id        String         @id @default(cuid())
+  name      String
+  type      CustomerType   @default(RESELLER)
+  tierId    String?
+  phone     String?
+  email     String?
+  address   Json?
+  taxId     String?
+  status    CustomerStatus @default(ACTIVE)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  deletedAt DateTime?
+
+  tier        CustomerTier? @relation(fields: [tierId], references: [id])
+  salesOrders SalesOrder[]
+
+  @@index([tierId])
+  @@index([type])
+  @@index([status])
+  @@map("customers")
+}
+
+model PriceListEntry {
+  id               String    @id @default(cuid())
+  productVariantId String
+  customerTierId   String
+  price            Decimal   @db.Decimal(18, 2)
+  effectiveFrom    DateTime  @default(now())
+  effectiveTo      DateTime?
+  setById          String?
+
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+  customerTier   CustomerTier   @relation(fields: [customerTierId], references: [id])
+  setBy          User?          @relation(fields: [setById], references: [id])
+
+  @@index([productVariantId])
+  @@index([customerTierId])
+  @@map("price_list_entries")
+}
+
+model SalesOrder {
+  id                   String           @id @default(cuid())
+  soNumber             String           @unique
+  customerId           String
+  channel              SalesChannel     @default(WAREHOUSE_PICKUP)
+  status               SalesOrderStatus @default(DRAFT)
+  subtotal             Decimal          @default(0) @db.Decimal(18, 2)
+  discountTotal        Decimal          @default(0) @db.Decimal(18, 2)
+  vatAmount            Decimal          @default(0) @db.Decimal(18, 2)
+  total                Decimal          @default(0) @db.Decimal(18, 2)
+  paymentReceivedTotal Decimal          @default(0) @db.Decimal(18, 2)
+  createdById          String?
+  dispatchedAt         DateTime?
+  deliveredAt          DateTime?
+  cancellationReason   String?
+  cancelledAt          DateTime?
+  cancelledById        String?
+  clientId             String?          @unique
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+  deletedAt            DateTime?
+
+  customer             Customer              @relation(fields: [customerId], references: [id])
+  createdBy            User?                 @relation("SalesOrderCreatedBy", fields: [createdById], references: [id])
+  cancelledBy          User?                 @relation("SalesOrderCancelledBy", fields: [cancelledById], references: [id])
+  lines                SalesOrderLine[]
+  invoice              Invoice?
+  payments             Payment[]
+  releaseAuthorisation ReleaseAuthorisation?
+  deliveryNote         DeliveryNote?
+  returns              Return[]
+
+  @@index([customerId])
+  @@index([status])
+  @@map("sales_orders")
+}
+
+model SalesOrderLine {
+  id               String   @id @default(cuid())
+  salesOrderId     String
+  productVariantId String
+  unitId           String?
+  saleForm         SaleForm
+  unitPrice        Decimal  @db.Decimal(18, 2)
+  discountAmount   Decimal  @default(0) @db.Decimal(18, 2)
+  lineTotal        Decimal  @db.Decimal(18, 2)
+
+  salesOrder     SalesOrder     @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+  unit           Unit?          @relation(fields: [unitId], references: [id])
+
+  @@index([salesOrderId])
+  @@index([productVariantId])
+  @@index([unitId])
+  @@map("sales_order_lines")
+}
+
+model Invoice {
+  id            String   @id @default(cuid())
+  salesOrderId  String   @unique
+  invoiceNumber String   @unique
+  issueDate     DateTime @default(now())
+  vatRate       Decimal  @db.Decimal(5, 4)
+  vatAmount     Decimal  @db.Decimal(18, 2)
+  total         Decimal  @db.Decimal(18, 2)
+  pdfDocumentId String?
+  createdAt     DateTime @default(now())
+
+  salesOrder  SalesOrder @relation(fields: [salesOrderId], references: [id])
+  pdfDocument Document?  @relation(fields: [pdfDocumentId], references: [id])
+
+  @@map("invoices")
+}
+
+model PaymentMethod {
+  id              String             @id @default(cuid())
+  name            String
+  methodType      PaymentMethodType
+  provider        String?
+  webhookEndpoint String?
+  status          CounterpartyStatus @default(ACTIVE)
+  createdAt       DateTime           @default(now())
+
+  payments Payment[]
+
+  @@map("payment_methods")
+}
+
+model Payment {
+  id                 String                    @id @default(cuid())
+  salesOrderId       String
+  paymentMethodId    String
+  amount             Decimal                   @db.Decimal(18, 2)
+  receivedAt         DateTime                  @default(now())
+  referenceNumber    String?
+  confirmationSource PaymentConfirmationSource @default(MANUAL_UPLOAD)
+  confirmedById      String?
+  receiptDocumentId  String?
+  status             PaymentStatus             @default(PENDING)
+  clientId           String?                   @unique
+  createdAt          DateTime                  @default(now())
+
+  salesOrder      SalesOrder      @relation(fields: [salesOrderId], references: [id])
+  paymentMethod   PaymentMethod   @relation(fields: [paymentMethodId], references: [id])
+  receiptDocument Document?       @relation(fields: [receiptDocumentId], references: [id])
+  posTransaction  PosTransaction?
+
+  @@index([salesOrderId])
+  @@index([status])
+  @@map("payments")
+}
+
+model PosTransaction {
+  id                    String                  @id @default(cuid())
+  paymentId             String                  @unique
+  provider              String
+  providerTransactionId String?
+  rawPayload            Json
+  receivedAt            DateTime                @default(now())
+  amount                Decimal                 @db.Decimal(18, 2)
+  reconciliationStatus  PosReconciliationStatus @default(UNMATCHED)
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@map("pos_transactions")
+}
+
+model ReleaseAuthorisation {
+  id                 String   @id @default(cuid())
+  salesOrderId       String   @unique
+  issuedById         String?
+  issuedAt           DateTime @default(now())
+  referencePaymentId String?
+  documentId         String?
+
+  salesOrder SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  issuedBy   User?      @relation(fields: [issuedById], references: [id])
+  document   Document?  @relation(fields: [documentId], references: [id])
+
+  @@map("release_authorisations")
+}
+
+model DeliveryNote {
+  id           String   @id @default(cuid())
+  salesOrderId String   @unique
+  dnNumber     String   @unique
+  preparedById String?
+  preparedAt   DateTime @default(now())
+  vehicleReg   String?
+  driverName   String?
+  documentId   String?
+
+  salesOrder      SalesOrder       @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  document        Document?        @relation(fields: [documentId], references: [id])
+  proofOfDelivery ProofOfDelivery?
+  waybill         Waybill?
+
+  @@map("delivery_notes")
+}
+
+model Waybill {
+  id             String   @id @default(cuid())
+  deliveryNoteId String   @unique
+  wbNumber       String   @unique
+  documentId     String?
+  createdAt      DateTime @default(now())
+
+  deliveryNote DeliveryNote @relation(fields: [deliveryNoteId], references: [id], onDelete: Cascade)
+  document     Document?    @relation(fields: [documentId], references: [id])
+
+  @@map("waybills")
+}
+
+model ProofOfDelivery {
+  id             String    @id @default(cuid())
+  deliveryNoteId String    @unique
+  receivedBy     String?
+  signedAt       DateTime?
+  documentId     String?
+  createdAt      DateTime  @default(now())
+
+  deliveryNote DeliveryNote @relation(fields: [deliveryNoteId], references: [id], onDelete: Cascade)
+  document     Document?    @relation(fields: [documentId], references: [id])
+
+  @@map("proofs_of_delivery")
+}
+
+model Return {
+  id                     String            @id @default(cuid())
+  salesOrderId           String
+  unitId                 String
+  initiatedAt            DateTime          @default(now())
+  initiatedById          String?
+  reason                 String?
+  disposition            ReturnDisposition @default(PENDING_DECISION)
+  dispositionDecidedById String?
+  dispositionDecidedAt   DateTime?
+  status                 ReturnStatus      @default(INITIATED)
+  createdAt              DateTime          @default(now())
+
+  salesOrder SalesOrder @relation(fields: [salesOrderId], references: [id])
+  unit       Unit       @relation(fields: [unitId], references: [id])
+
+  @@index([salesOrderId])
+  @@index([unitId])
+  @@map("returns")
+}
+
+// ============================================================================
+// APPROVALS (engine seeded at MVP, configurable UI in phase 2)
+// ============================================================================
+
+model ApprovalRule {
+  id            String             @id @default(cuid())
+  name          String
+  triggerAction String
+  condition     Json
+  status        ApprovalRuleStatus @default(ACTIVE)
+  createdById   String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  stepRules ApprovalStepRule[]
+  requests  ApprovalRequest[]
+
+  @@map("approval_rules")
+}
+
+model ApprovalStepRule {
+  id             String  @id @default(cuid())
+  approvalRuleId String
+  sequence       Int
+  requiredRoleId String?
+  allowAnyHolder Boolean @default(true)
+  requiredUserId String?
+
+  approvalRule ApprovalRule @relation(fields: [approvalRuleId], references: [id], onDelete: Cascade)
+  requiredRole Role?        @relation("ApprovalStepRequiredRole", fields: [requiredRoleId], references: [id])
+  requiredUser User?        @relation("ApprovalStepRequiredUser", fields: [requiredUserId], references: [id])
+
+  @@unique([approvalRuleId, sequence])
+  @@index([approvalRuleId])
+  @@map("approval_step_rules")
+}
+
+model ApprovalRequest {
+  id             String                @id @default(cuid())
+  approvalRuleId String
+  subjectType    String
+  subjectId      String
+  initiatedById  String?
+  initiatedAt    DateTime              @default(now())
+  status         ApprovalRequestStatus @default(PENDING)
+  resolvedAt     DateTime?
+
+  approvalRule ApprovalRule       @relation(fields: [approvalRuleId], references: [id])
+  initiatedBy  User?              @relation("ApprovalInitiator", fields: [initiatedById], references: [id])
+  decisions    ApprovalDecision[]
+
+  @@index([approvalRuleId])
+  @@index([subjectType, subjectId])
+  @@index([status])
+  @@map("approval_requests")
+}
+
+model ApprovalDecision {
+  id                String               @id @default(cuid())
+  approvalRequestId String
+  stepSequence      Int
+  decidedById       String
+  decision          ApprovalDecisionType
+  decidedAt         DateTime             @default(now())
+  comment           String?
+
+  approvalRequest ApprovalRequest @relation(fields: [approvalRequestId], references: [id], onDelete: Cascade)
+  decidedBy       User            @relation(fields: [decidedById], references: [id])
+
+  @@index([approvalRequestId])
+  @@map("approval_decisions")
+}
+
+// ============================================================================
+// DOCUMENTS
+// ============================================================================
+
+model Document {
+  id             String                 @id @default(cuid())
+  filename       String
+  mimeType       String
+  sizeBytes      Int
+  storageKey     String
+  sha256Hash     String
+  uploadedById   String?
+  uploadedAt     DateTime               @default(now())
+  accessCategory DocumentAccessCategory @default(PROCUREMENT)
+
+  uploadedBy User?          @relation(fields: [uploadedById], references: [id])
+  links      DocumentLink[]
+
+  proformaInvoices      ProformaInvoice[]
+  landedCosts           LandedCost[]
+  forwarderInvoices     ForwarderInvoice[]
+  invoices              Invoice[]
+  releaseAuthorisations ReleaseAuthorisation[]
+  deliveryNotes         DeliveryNote[]
+  waybills              Waybill[]
+  proofsOfDelivery      ProofOfDelivery[]
+  payments              Payment[]
+
+  @@index([accessCategory])
+  @@map("documents")
+}
+
+model DocumentLink {
+  id         String  @id @default(cuid())
+  documentId String
+  entityType String
+  entityId   String
+  linkLabel  String?
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@index([entityType, entityId])
+  @@map("document_links")
+}
+
+// ============================================================================
+// AUDIT, SETTINGS, SNAPSHOTS
+// ============================================================================
+
+model AuditLogEntry {
+  id          String   @id @default(cuid())
+  actorUserId String?
+  action      String
+  entityType  String
+  entityId    String?
+  beforeState Json?
+  afterState  Json?
+  context     Json?
+  occurredAt  DateTime @default(now())
+
+  actor User? @relation("AuditActor", fields: [actorUserId], references: [id])
+
+  @@index([actorUserId])
+  @@index([entityType, entityId])
+  @@index([occurredAt])
+  @@map("audit_log_entries")
+}
+
+model FeatureToggle {
+  id              String             @id @default(cuid())
+  key             String             @unique
+  description     String?
+  value           Json
+  status          CounterpartyStatus @default(ACTIVE)
+  lastChangedById String?
+  lastChangedAt   DateTime           @default(now())
+
+  @@map("feature_toggles")
+}
+
+model PeriodSnapshot {
+  id           String               @id @default(cuid())
+  periodLabel  String               @unique
+  snapshotDate DateTime             @default(now())
+  takenById    String?
+  status       PeriodSnapshotStatus @default(LOCKED)
+
+  valuationLines StockValuationLine[]
+
+  @@map("period_snapshots")
+}
+
+model StockValuationLine {
+  id                  String  @id @default(cuid())
+  periodSnapshotId    String
+  productVariantId    String
+  warehouseId         String
+  quantityOnHand      Int
+  valuationMarket     Decimal @db.Decimal(18, 2)
+  valuationLandedCost Decimal @db.Decimal(18, 2)
+
+  periodSnapshot PeriodSnapshot @relation(fields: [periodSnapshotId], references: [id], onDelete: Cascade)
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+  warehouse      Warehouse      @relation(fields: [warehouseId], references: [id])
+
+  @@index([periodSnapshotId])
+  @@map("stock_valuation_lines")
+}
+
+// ============================================================================
+// SYNC LAYER (offline support)
+// ============================================================================
+
+model IdRangeAllocation {
+  id          String   @id @default(cuid())
+  deviceId    String
+  userId      String
+  idType      String
+  rangeStart  Int
+  rangeEnd    Int
+  nextValue   Int
+  allocatedAt DateTime @default(now())
+  exhausted   Boolean  @default(false)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([deviceId, idType, rangeStart])
+  @@index([userId])
+  @@map("id_range_allocations")
+}
+
+model ConflictReviewItem {
+  id           String         @id @default(cuid())
+  entityType   String
+  entityId     String
+  fieldPath    String?
+  versionA     Json
+  versionB     Json
+  contextA     Json?
+  contextB     Json?
+  status       ConflictStatus @default(OPEN)
+  resolvedById String?
+  resolvedAt   DateTime?
+  resolution   Json?
+  createdAt    DateTime       @default(now())
+
+  resolvedBy User? @relation("ConflictResolver", fields: [resolvedById], references: [id])
+
+  @@index([status])
+  @@index([entityType, entityId])
+  @@map("conflict_review_items")
+}
+
+model ProcessedSyncAction {
+  id          String   @id @default(cuid())
+  clientId    String   @unique
+  userId      String?
+  action      String
+  resultRef   String?
+  processedAt DateTime @default(now())
+
+  @@index([processedAt])
+  @@map("processed_sync_actions")
+}

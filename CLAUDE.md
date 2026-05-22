@@ -1,0 +1,333 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+# Enviable Inventory & Operations System
+
+Internal back-office system for Enviable Tricycle Auto Parts Ltd, a Nigerian
+company that imports TVS King tricycles (locally "keke") as CKD kits, stores and
+optionally assembles them, and sells to resellers. This repo is the backend API
+plus (later) the web frontend.
+
+## Project conventions
+
+- **Never use em dashes** anywhere: code, comments, docs, commit messages.
+- TypeScript everywhere, strict mode on. No `any` unless unavoidable and commented.
+- No secrets in the repo. Use `.env` (gitignored); document new vars in `.env.example`.
+- Conventional Commits for commit messages.
+- Keep modules cohesive: one NestJS module per domain area, clear boundaries.
+
+## Stack (locked)
+
+- Backend: NestJS 10, TypeScript, Node 22 LTS.
+- ORM: Prisma 6 (do NOT upgrade to 7; `package.json#prisma` deprecation warning
+  is known and deferred).
+- DB: PostgreSQL 16, local via Docker on host port 5433 (5432 is used by an
+  unrelated container).
+- Auth: session cookies via express-session + @nestjs/passport style, argon2id
+  hashing. NOT Better-auth, NOT JWT. (Deliberate deviation from the Tech Stack
+  doc, which named Better-auth; session cookies are the lower-friction fit for a
+  pure NestJS API and deliver the same architecture.)
+- Validation: class-validator + class-transformer via the global ValidationPipe.
+- Frontend (later): Next.js 15 App Router, PWA, offline-tolerant (Level 1.5).
+- Hosting (later): Fly.io Frankfurt, Aiven Postgres, Upstash Redis, Cloudflare R2,
+  SendGrid. Cost-conscious posture.
+
+## Architecture rules
+
+- **Auth then RBAC**: global AuthGuard runs first (attaches `req.user`), then
+  global PermissionsGuard enforces `@RequirePermissions(...)`.
+- **Permissions are the union** of a user's roles' permissions, computed once at
+  login and stored in the session. No deny-list. (Invariant I-13.)
+- **Every mutation is audited** via the global AuditInterceptor on `@Audit(...)`
+  annotated handlers. Reads are not audited (except the one demo endpoint).
+- **Audit log and period snapshots are immutable** (Invariants I-9, I-10): create
+  only, never update or delete.
+- **Every Unit state change writes a StockMovement in the same transaction**
+  (Invariant I-3). There is no way to change unit state without a movement.
+- **Sales staff never see cost or landed-cost data** (Invariant I-8): gated by the
+  `costdata.view` permission, which Sales Officer roles do not hold. The
+  `CostVisibilityInterceptor` strips `landedCost` from response bodies for
+  callers lacking the permission. **The audit log keeps the full response**
+  (cost data included): the audit captures what the system computed, not what
+  a particular caller saw. Privacy of cost data in audit rows is achieved by
+  gating who can read the audit log, not by sanitising the rows at write time.
+- **Build for scale, ship for one**: data model supports multi-warehouse and
+  configurable rules, but those features stay off at MVP. Additive later, not a
+  rewrite.
+- Any value written to a Prisma JSON column must be typed `Prisma.InputJsonValue`,
+  never `Record<string, unknown>` (Prisma rejects the latter).
+
+## Database layer (DONE, do not modify under prisma/)
+
+- `prisma/schema.prisma`: 50 models, 37 enums, validated and migrated.
+- Migrations applied, including partial unique indexes for invariants I-5, I-11,
+  and the one-current-price-per-variant-tier rule.
+- `prisma/seed.ts`: idempotent. Seeded 48 permissions, 14 roles, 5 users, 2
+  counterparties (TVS manufacturer, VSK supplier), 2 products + 5 variants from
+  the real PI, 2 customer tiers, 10 price list entries, 2 payment methods, 1
+  warehouse, 3 feature toggles.
+- Raw-SQL column names are quoted camelCase (e.g. `"purchaseOrderId"`), NOT
+  snake_case. `@@map` renames tables only, not columns.
+- Seeded users have a non-authenticating placeholder password hash. Use
+  `scripts/set-password.ts` to set a real one before logging in.
+- The REVOKE-based immutability statements are deferred until a non-owner
+  `enviable_app` DB role exists; they do nothing while connected as the owner.
+
+## Key invariants enforced in the service layer (not the DB)
+
+- I-2/I-3: atomic unit state transition + movement.
+- I-4: confirmed payments >= sales order total before RELEASE_AUTHORISED.
+- I-6: PO auto-transitions to FULLY_RECEIVED when received == ordered.
+- I-7: shipment cannot close with unresolved variances.
+- I-8: hide cost data from sales staff.
+- I-13: permission union, no deny-list.
+- I-14: feature-toggle changes write audit entries.
+- I-15: returns only on units in SOLD_AS_CKD or SOLD_AS_CBU.
+
+## Domain model essentials
+
+- A keke is a serialized **Unit** (unique engineNumber + chassisNumber, both
+  supplied by TVS, captured at manifest receipt). The system never reasons in
+  bare quantities for kekes; always specific Units.
+- Procurement chain: internal PO (1:1 with a TVS portal order) -> Proforma
+  Invoice from VSK (revisions supported, one ACTIVE at a time) -> Shipment(s)
+  (partial shipments allowed) -> manifest receipt -> Units created.
+- Two sale paths: CKD (kit sold as-is to a dealer) and CBU (assembled in-house
+  first). One SalesOrderLine = one Unit.
+- Spare parts are quantity-tracked, received and stored only (no sale at MVP).
+- Assembly consumes nothing external; CKD kits are self-contained (no bill of
+  materials).
+- Money is always `Decimal(18,2)` with a separate currency column. Never Float.
+- Internal IDs are cuid(); human-facing identifiers (engineNumber, poNumber,
+  soNumber, invoiceNumber) are separate unique columns.
+
+## MVP scope boundaries
+
+IN: procurement + stock-in, historical data load, inventory + movements,
+assembly, warehouse-to-reseller sales, payment recording (bank transfer; manual
+confirm), documents, audit log, four reports, RBAC with a fixed seeded role set.
+
+OUT (deferred): retail POS, configurable approval-rule and RBAC admin UIs,
+returns workflow, period-snapshot lock UI, POS webhook integration, multi-payment
+per order, credit sales, spare-parts sale, inter-warehouse transfers, offline
+sync UI, mobile-native. Build the data model so these are additive later.
+
+## Build sequence (milestones)
+
+- M0 Foundation: schema + migrations + seed. DONE.
+- M1 Spine: auth + RBAC guard + audit interceptor + proof-of-chain endpoint. DONE.
+- M2 Procurement + stock-in (incl. Historical Data Load tool). DONE.
+- M3 Inventory + assembly. DONE.
+- M4 Sales: customers + pricing + SO lifecycle + invoicing + payments +
+  release authorisation + delivery + returns + cancel. DONE.
+- M5 Reporting + offline sync + observability + production hardening +
+  acceptance sign-off. The final milestone. Covers:
+  - The four MVP reports.
+  - Offline sync layer: wire endpoints over the existing schema scaffolding
+    (`IdRangeAllocation`, `ConflictReviewItem`, `ProcessedSyncAction`, and
+    the `clientId` fields scattered through transactional models).
+  - Observability: structured logging, request IDs, basic metrics.
+  - Production hardening: pulls in every entry from the
+    `Deferred / hardening backlog` section below (session fixation, the
+    `rolling + resave` Redis interaction, the audit/period-snapshot/stock-
+    valuation `REVOKE` once a non-owner `enviable_app` role exists, the
+    advisory-lock ID-generator concurrency test) plus the VAT rounding
+    decision called out there.
+  - Acceptance sign-off.
+
+Every controller hangs off three patterns: `@RequirePermissions(...)`,
+`@CurrentUser()`, `@Audit(action, entityType)`.
+
+## Commands
+
+- `npm run start:dev` to run the API (global prefix `/api`).
+- `npm run build` / `npm run typecheck` to compile / typecheck.
+- `npx prisma migrate dev` to apply migrations.
+- `npx prisma db seed` to run the idempotent seed.
+- `npm run set-password -- <email> <password>` to set a real password.
+
+## Deferred / hardening backlog
+
+These are real, accepted issues parked for later. Do not lose them.
+
+- **Session fixation (M5)**: login should call `req.session.regenerate()` before
+  storing the principal, to stop an attacker pre-planting a session ID. Not yet
+  done. Land it with the M5 hardening pass.
+- **rolling + resave interaction (M5)**: `rolling: true` with `resave: false`
+  may not slide store-side expiry once a real session store is used. Moot with
+  the in-memory dev store. Revisit when Upstash Redis sessions are wired in M5.
+- **ID generators under concurrency (M5)**: `poNumber` and `shipmentReference`
+  use `pg_advisory_xact_lock` keyed on distinct constants; correct by
+  construction but not verified under contention. Add a focused concurrency
+  test before production cutover.
+- **Audit-table DB immutability (production hardening)**: the REVOKE
+  UPDATE/DELETE on `audit_log_entries` (and `period_snapshots`,
+  `stock_valuation_lines`) is deferred until a non-owner `enviable_app` DB role
+  exists. App-layer guarantee is real (AuditService only creates); DB-layer
+  enforcement comes with the role-separation migration.
+- **Per-line vs per-invoice VAT rounding (M5, go-live prerequisite)**:
+  current implementation rounds VAT once at the order level
+  (`(subtotal - discountTotal) * 0.075` to 2dp). Per-line rounded VAT can
+  produce a different total by a few kobo when discounts vary across lines.
+  Confirm which convention matches the FIRS rule and the customer-facing
+  invoice expectation before go-live, align the computation, and add a
+  regression test that pins the chosen behaviour.
+- **TypeScript pinned at ^5.x**: NestJS 10 is incompatible with TS 6 tsconfig
+  conventions (`moduleResolution: "node"`, `baseUrl` deprecated). Do not upgrade
+  TypeScript to 6.x.
+- **Prisma stays on 6.x**: do not upgrade to Prisma 7 during MVP. The
+  `package.json#prisma` deprecation warning is known and deferred.
+
+## When in doubt
+
+- Do not modify anything under `prisma/` without explicit instruction.
+- Do not add Better-auth, JWT, Auth0, or Clerk.
+- Do not introduce a new dependency without noting why.
+- Prefer the boring, well-supported option. This is a business system, not a
+  research project.
+
+# Supplementary: schema and build gotchas
+
+Things that are easy to get wrong and not visible from the charter above.
+
+## Three-tier invariant enforcement
+
+Every Domain Model invariant (I-1 .. I-15) lives in exactly one of these tiers.
+Know which tier before "adding a constraint":
+
+1. **Prisma schema**: `@unique`, `@@unique`, FK relations, enum types. Flagged
+   inline in `schema.prisma` with `// INVARIANT I-...`.
+2. **Raw SQL migration**: partial unique indexes the DSL cannot express. Flagged
+   inline with `// INVARIANT (SQL):` or `// INVARIANT I-... (SQL):`. Currently
+   applied: one active PI per PO, one active SO line per unit, one current price
+   per (variant, tier).
+3. **Application service layer**: the list under "Key invariants enforced in the
+   service layer" above. These cannot be moved into the DB.
+
+When adding a new constraint, pick its tier up front and put the inline marker
+in `schema.prisma` so future migrations can find it.
+
+## Additional schema rules not in the charter
+
+- StockMovement is conceptually immutable (I-3 / I-10): no `updatedAt`, no
+  `deletedAt`. Same treatment as AuditLogEntry, PeriodSnapshot, and
+  StockValuationLine.
+- Soft delete via `deletedAt DateTime?` is present where deletion is
+  conceivable; the audit log records everything regardless.
+- State machines are Prisma enums (37 of them). If tempted to add a free-text
+  status, make it an enum instead.
+
+## Things intentionally omitted (do not "fix" these)
+
+- **DocumentLink** is polymorphic (`entityType` + `entityId`) with no
+  database-level FKs to its targets. Prisma cannot back multiple relations with
+  one scalar FK. Resolution is in application code. Do not add target-specific
+  FKs.
+- **Assembly consumables / BillOfMaterials / ConsumableUsage** are not modelled
+  (CKD kits are self-contained).
+- **Spare parts** have no sale logic at MVP (Option A from the domain doc).
+
+## Offline-sync layer
+
+`IdRangeAllocation`, `ConflictReviewItem`, `ProcessedSyncAction`, and the
+`clientId` fields scattered through transactional models (e.g.
+`StockMovement.clientId`) implement domain-doc 7.2.6 idempotent sync. When
+adding a new transactional model, decide whether it needs a `clientId @unique`
+for sync idempotency.
+
+## tsconfig + nest-cli build gotcha
+
+`nest-cli.json` has `deleteOutDir: true`. If you re-add `incremental: true` to
+`tsconfig.json`, the leftover `tsconfig.tsbuildinfo` makes `tsc` skip emit after
+`nest build` deletes `dist/`, and you get a silent "success" with exit 0 and no
+output. Keep `incremental` off, or scope its build-info file to a path inside
+`dist`.
+
+## CostVisibilityInterceptor: skip class instances when stripping
+
+The interceptor recursively walks the response and removes cost fields for
+callers without `costdata.view`. The walk MUST NOT spread non-plain objects
+into a fresh literal: `Prisma.Decimal` and native `Date` lose their
+prototypes via `{...value}` (Date becomes `{}`, Decimal becomes
+`{ s, e, d, ... }`), so every cost-bearing response sent to a non-cost-view
+caller silently mangles its money and timestamps. Guard with:
+
+```ts
+if (Object.getPrototypeOf(value) !== Object.prototype) return value;
+```
+
+before the recursive spread. This was latent for several prompts because
+every test path until M4 Prompt 2 (pricing) ran as a `costdata.view` holder,
+which short-circuits the walk entirely. Any new interceptor or response
+transformer that recurses into objects has the same hazard.
+
+## SO state machine permits CANCELLED past release; the service is the gate
+
+`SO_STATE_TRANSITIONS` (`src/sales-orders/state-machine.ts`) lists
+`CANCELLED` in the transitions from `RELEASE_AUTHORISED` and `PICKING` for
+a hypothetical admin/override path. The user-facing `POST /sales-orders/:id/cancel`
+endpoint does NOT use those transitions: `SalesOrdersService.cancel`
+allowlist-checks against `{DRAFT, AWAITING_PAYMENT, PAYMENT_RECEIVED}`
+before reaching `assertSoTransition`, because reversing a released order
+(units already transitioned to `SOLD_AS_CKD`/`SOLD_AS_CBU` and physically
+committed) is the returns/refund flow, not cancellation. If a future
+admin-cancel path is added, keep the layering: do not collapse the
+service-layer status allowlist into the state-machine map. They check
+different things, and merging them would re-open the gap that the cancel
+endpoint was added to close.
+
+The cancellation reason is captured in the response body so the
+`AuditInterceptor` persists it (with `refundOutstanding` and
+`cancelledById`) into the audit row's `afterState`. The `SalesOrder` model
+has no `cancellationReason` column on purpose: the audit log is the system
+of record for the why (immutable per I-10), and adding a column would
+duplicate that without buying anything.
+
+## Prisma raw-SQL column quoting
+
+`@@map` rewrites **table** names to snake_case. It does not rewrite columns. In
+raw-SQL migrations, columns are quoted camelCase: `"purchaseOrderId"`, not
+`purchase_order_id`. The example SQL in `prisma/README.md` is snake_case and is
+wrong for this schema; the correct form lives in
+`prisma/migrations/20260520143602_invariant_partial_unique_indexes/migration.sql`.
+
+## Working method for prisma changes
+
+- Read `prisma/README.md` before non-trivial schema changes.
+- After editing `schema.prisma`, run `npx prisma format` and `npx prisma validate`.
+- For a raw-SQL invariant migration: `npx prisma migrate dev --create-only --name <n>`,
+  edit the empty `migration.sql`, then `npx prisma migrate dev` to apply.
+
+## Verify scripts: placeholder-hash precondition
+
+Every `scripts/verify-*.ts` aborts loudly when a test user it touches is not on
+the seeded placeholder hash (`$argon2id$PLACEHOLDER_RESET_REQUIRED`). This is
+deliberate: it prevents clobbering a real password set by an earlier walkthrough
+(e.g. the `src/README.md` proof-of-chain leaves `itadmin` on a real password).
+
+To unblock a verify script after a walkthrough:
+
+```bash
+npm run reset-test-passwords
+```
+
+This puts the five seeded test accounts (theresa, daniel, ikenna, kelechi,
+itadmin) back on the placeholder. It is scoped to those accounts only, never
+a blanket reset, and is idempotent. Note that `npx prisma db seed` is **not**
+the right tool: its user upsert only refreshes `fullName` on existing rows
+(deliberate, so re-seeding never clobbers a real password in deployed
+environments).
+
+## Local Postgres container
+
+The dev database runs in a Docker container started during setup:
+
+```
+docker run -d --name enviable-postgres \
+  -e POSTGRES_USER=user -e POSTGRES_PASSWORD=pass -e POSTGRES_DB=enviable \
+  -p 5433:5432 postgres:16
+```
+
+If 5433 is also occupied on your host, pick another port and update
+`DATABASE_URL` in `.env` to match.
