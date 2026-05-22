@@ -343,12 +343,23 @@ service-layer status allowlist into the state-machine map. They check
 different things, and merging them would re-open the gap that the cancel
 endpoint was added to close.
 
-The cancellation reason is captured in the response body so the
-`AuditInterceptor` persists it (with `refundOutstanding` and
-`cancelledById`) into the audit row's `afterState`. The `SalesOrder` model
-has no `cancellationReason` column on purpose: the audit log is the system
-of record for the why (immutable per I-10), and adding a column would
-duplicate that without buying anything.
+Cancellation is recorded in BOTH the entity columns AND the audit log; they
+are complementary, not alternatives. `SalesOrder` has `cancellationReason`,
+`cancelledAt`, and `cancelledById` columns plus the `cancelledBy` relation
+(folded into the fresh schema). The cancel endpoint writes these columns
+directly, so the reason lives on the entity where reporting and order views
+expect to query it. The `AuditInterceptor` additionally records the
+cancellation in the immutable audit log via `req.user`, exactly as it does for
+every mutation. The columns are the queryable entity-level fact; the audit row
+is the immutable event record (I-10). Both happen on every cancel.
+
+This supersedes the prior audit-only rationale, and the reversal is deliberate,
+not a forgotten decision. The earlier build worked under a locked Prisma schema,
+so the cancel endpoint genuinely could not add columns and stashing the reason
+in the audit row's `afterState` was the correct adaptation to that constraint.
+This build authored the schema fresh with no lock, so the columns were folded
+in on purpose. The constraint changed, so the approach changed: the old design
+was right for its constraint, this one is right for ours.
 
 ## Unit state machine: DEMO and INTERNAL_USE are round-trip states (ratified)
 
