@@ -3,6 +3,7 @@ import { AssemblyModule } from '../assembly/assembly.module';
 import { SalesOrdersModule } from '../sales-orders/sales-orders.module';
 import { ShipmentsModule } from '../shipments/shipments.module';
 import { SyncActionsService } from './sync-actions.service';
+import { SyncConflictsService } from './sync-conflicts.service';
 import { SyncController } from './sync.controller';
 import { SyncIdempotencyService } from './sync-idempotency.service';
 import { SyncMergeService } from './sync-merge.service';
@@ -18,6 +19,7 @@ import { SyncService } from './sync.service';
     SyncIdempotencyService,
     SyncActionsService,
     SyncMergeService,
+    SyncConflictsService,
   ],
 })
 export class SyncModule {}

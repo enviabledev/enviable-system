@@ -1,10 +1,20 @@
-import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { Principal } from '../auth/auth.service';
-import { CurrentUser } from '../common/decorators';
+import { Audit, CurrentUser, RequirePermissions } from '../common/decorators';
 import { AllocateIdRangeDto } from './dto/allocate-id-range.dto';
 import { QueryIdRangesDto } from './dto/query-id-ranges.dto';
+import { ResolveConflictDto } from './dto/resolve-conflict.dto';
 import { SyncBatchDto } from './dto/sync-batch.dto';
 import { SyncActionsService } from './sync-actions.service';
+import { SyncConflictsService } from './sync-conflicts.service';
 import { SyncService } from './sync.service';
 
 // Authenticated only (no @RequirePermissions): any authenticated user with a
@@ -17,6 +27,7 @@ export class SyncController {
   constructor(
     private readonly sync: SyncService,
     private readonly actions: SyncActionsService,
+    private readonly conflicts: SyncConflictsService,
   ) {}
 
   // Writes userId, so it needs the principal.
@@ -40,5 +51,33 @@ export class SyncController {
   @Post('actions')
   syncActions(@Body() batch: SyncBatchDto, @CurrentUser() actor: Principal) {
     return this.actions.processBatch(batch, actor);
+  }
+
+  // Supervisor conflict review queue. Gated on conflict.resolve (GM and
+  // Warehouse Manager hold it). Reads are not audited.
+  @Get('conflicts')
+  @RequirePermissions('conflict.resolve')
+  listConflicts() {
+    return this.conflicts.listOpen();
+  }
+
+  @Get('conflicts/:id')
+  @RequirePermissions('conflict.resolve')
+  getConflict(@Param('id') id: string) {
+    return this.conflicts.findOne(id);
+  }
+
+  // Resolve: applies the chosen value and marks the item RESOLVED. Writes
+  // resolvedById, so it needs the principal; audited as a mutation.
+  @Post('conflicts/:id/resolve')
+  @HttpCode(200)
+  @RequirePermissions('conflict.resolve')
+  @Audit('conflict.resolve', 'ConflictReviewItem')
+  resolveConflict(
+    @Param('id') id: string,
+    @Body() dto: ResolveConflictDto,
+    @CurrentUser() actor: Principal,
+  ) {
+    return this.conflicts.resolve(id, dto, actor.id);
   }
 }

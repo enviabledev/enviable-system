@@ -13,7 +13,7 @@ import {
   UnitReceiptPayloadDto,
 } from './dto/sync-payloads.dto';
 import { UpdateEntityPayloadDto } from './dto/update-entity.dto';
-import { FieldCollision, SyncMergeService } from './sync-merge.service';
+import { LwwOutcome, ReviewRef, SyncMergeService } from './sync-merge.service';
 import { detectUniqueField, SyncUniqueConflictError } from './sync-conflicts';
 import { SyncIdempotencyService } from './sync-idempotency.service';
 
@@ -21,7 +21,7 @@ const DISCOUNT_PERMISSION = 'salesorder.discount';
 
 export type SyncConflict =
   | { kind: 'unique'; field: string; value: unknown }
-  | { kind: 'field-collision'; fields: FieldCollision[] };
+  | { kind: 'field-review'; reviews: ReviewRef[] };
 
 export interface ActionResult {
   clientId: string;
@@ -29,6 +29,7 @@ export interface ActionResult {
   status: 'processed' | 'duplicate' | 'error' | 'conflict';
   resultRef?: string | null;
   applied?: string[];
+  lastWriteWins?: LwwOutcome[];
   conflict?: SyncConflict;
   error?: string;
 }
@@ -185,24 +186,35 @@ export class SyncActionsService {
           clientId,
           type,
           principal.id,
-          () => this.merge.applyFieldMerge(dto, principal.id),
+          () =>
+            this.merge.applyFieldMerge(dto, {
+              actorId: principal.id,
+              deviceId: action.deviceId,
+              clientTimestamp: action.clientTimestamp,
+            }),
           (r) => r.recordId,
         );
         if (outcome.status === 'duplicate') {
           return { status: 'duplicate', resultRef: outcome.resultRef };
         }
-        // Clean fields were applied. Any same-field collisions are flagged as a
-        // conflict (not overwritten); the next prompt's policy resolves them.
-        const { applied, collisions } = outcome.result;
-        if (collisions.length > 0) {
+        // Clean fields applied; low-stakes collisions auto-resolved by policy
+        // (last write wins); high-stakes collisions queued as review items.
+        const { applied, lastWriteWins, reviews } = outcome.result;
+        if (reviews.length > 0) {
           return {
             status: 'conflict',
             resultRef: outcome.resultRef,
             applied,
-            conflict: { kind: 'field-collision', fields: collisions },
+            lastWriteWins,
+            conflict: { kind: 'field-review', reviews },
           };
         }
-        return { status: 'processed', resultRef: outcome.resultRef, applied };
+        return {
+          status: 'processed',
+          resultRef: outcome.resultRef,
+          applied,
+          lastWriteWins,
+        };
       }
       default: {
         // Unreachable: the DTO enum already constrains type. Defensive.

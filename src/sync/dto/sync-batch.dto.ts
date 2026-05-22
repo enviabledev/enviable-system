@@ -3,8 +3,10 @@ import {
   ArrayMinSize,
   IsArray,
   IsEnum,
+  IsISO8601,
   IsNotEmpty,
   IsObject,
+  IsOptional,
   IsString,
   ValidateNested,
 } from 'class-validator';
@@ -35,6 +37,16 @@ export class SyncActionDto {
   // reused module DTO, so a malformed payload errors for its action alone.
   @IsObject()
   payload!: Record<string, unknown>;
+
+  // Edit context from the offline device, used for conflict handling: the client
+  // timestamp drives last-write-wins, and deviceId is recorded on review items.
+  @IsOptional()
+  @IsISO8601()
+  clientTimestamp?: string;
+
+  @IsOptional()
+  @IsString()
+  deviceId?: string;
 }
 
 export class SyncBatchDto {
