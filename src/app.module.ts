@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { AssemblyModule } from './assembly/assembly.module';
 import { AuditInterceptor } from './audit/audit.interceptor';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
@@ -33,6 +34,7 @@ import { UnitsModule } from './units/units.module';
     UnitsModule,
     StockMovementsModule,
     SparePartsModule,
+    AssemblyModule,
   ],
   providers: [
     // Global guards execute in registration order. AuthGuard MUST be first: it
