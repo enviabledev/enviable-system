@@ -41,6 +41,11 @@ plus (later) the web frontend.
   login and stored in the session. No deny-list. (Invariant I-13.)
 - **Every mutation is audited** via the global AuditInterceptor on `@Audit(...)`
   annotated handlers. Reads are not audited (except the one demo endpoint).
+- **`@CurrentUser()` only where a handler writes an actor column** (e.g.
+  `approvedById`, `assembledById`, `cancelledById`, a movement's `actorId`). The
+  AuditInterceptor already captures the actor from `req.user` for every audited
+  mutation, so do not inject the principal just to "have" the actor. Inject it
+  where it is used; rely on the interceptor everywhere else.
 - **Audit log and period snapshots are immutable** (Invariants I-9, I-10): create
   only, never update or delete.
 - **Every Unit state change writes a StockMovement in the same transaction**
@@ -173,6 +178,35 @@ These are real, accepted issues parked for later. Do not lose them.
   Confirm which convention matches the FIRS rule and the customer-facing
   invoice expectation before go-live, align the computation, and add a
   regression test that pins the chosen behaviour.
+- **PI totalValue is the all-in CIF figure (go-live confirm)**: a Proforma
+  Invoice's `totalValue` is computed as goods + freightAmount + insuranceAmount
+  (what is owed the supplier), with freight and insurance also stored in their
+  own columns. Landed cost (M2 Prompt 6) separately tracks FREIGHT and
+  MARINE_INSURANCE components allocated to units. Before go-live, confirm with
+  whoever reconciles supplier invoices whether the landed-cost FREIGHT/
+  MARINE_INSURANCE components should EXCLUDE what the PI total already carries,
+  so freight/insurance is not double-counted when reconciling paid-vs-costed.
+  Likely answer: PI total is the AP figure (CIF owed to supplier), landed cost
+  re-states freight/insurance plus the Nigeria-side costs (customs, port,
+  clearing, inland) for unit costing, a different purpose, so the overlap is
+  intentional, not a bug. Decide deliberately and pin it.
+- **Historical bulk load is non-atomic across batches (go-live operations)**:
+  the historical unit load validates all-or-nothing pre-commit, but writes in
+  500-units-per-transaction batches (a single tx for a multi-thousand-unit load
+  would hold a very long lock). If the real go-live load fails mid-stream,
+  earlier batches are already persisted. Recovery is NOT a naive re-run of the
+  same file (the against-DB duplicate check would reject the already-loaded
+  engine/chassis numbers and fail the whole file). Re-run with the already-
+  loaded rows removed, or add a skip-present resumption mode before the real
+  ~2000-unit load. Operational runbook note, not a code change yet.
+- **Dry-run audit rows share the commit action name**: the historical-load
+  endpoints audit both dry-runs and commits (a dry-run of a bulk import is an
+  operationally significant event; "dry-run writes nothing" is a guarantee
+  about domain data, which holds). A dry-run is distinguishable from a commit
+  by `afterState.dryRun` (true vs false) on the audit row, but the action name
+  (`historical.units` / `historical.spareparts`) is shared. If at-a-glance
+  action-name distinction is later wanted, give dry-runs a distinct action;
+  for now the row carries the flag in context.
 - **TypeScript pinned at ^5.x**: NestJS 10 is incompatible with TS 6 tsconfig
   conventions (`moduleResolution: "node"`, `baseUrl` deprecated). Do not upgrade
   TypeScript to 6.x.
