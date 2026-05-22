@@ -14,6 +14,7 @@ import { ProductsModule } from './products/products.module';
 import { ProformaInvoicesModule } from './proforma-invoices/proforma-invoices.module';
 import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
 import { ShipmentsModule } from './shipments/shipments.module';
+import { UnitsModule } from './units/units.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { ShipmentsModule } from './shipments/shipments.module';
     ProformaInvoicesModule,
     ShipmentsModule,
     HistoricalLoadModule,
+    UnitsModule,
   ],
   providers: [
     // Global guards execute in registration order. AuthGuard MUST be first: it
