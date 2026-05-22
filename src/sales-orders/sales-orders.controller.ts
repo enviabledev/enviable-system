@@ -68,4 +68,17 @@ export class SalesOrdersController {
   submit(@Param('id') id: string) {
     return this.salesOrders.submit(id);
   }
+
+  @Post(':id/invoice')
+  @RequirePermissions('salesorder.create')
+  @Audit('salesorder.invoice', 'Invoice')
+  generateInvoice(@Param('id') id: string) {
+    return this.salesOrders.generateInvoice(id);
+  }
+
+  @Get(':id/invoice')
+  @RequirePermissions('salesorder.read')
+  getInvoice(@Param('id') id: string) {
+    return this.salesOrders.getInvoiceForSo(id);
+  }
 }

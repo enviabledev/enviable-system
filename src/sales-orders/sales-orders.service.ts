@@ -19,10 +19,13 @@ import { CreateSalesOrderDto } from './dto/create-sales-order.dto';
 import { QuerySalesOrdersDto } from './dto/query-sales-orders.dto';
 import { SoLineDto } from './dto/so-line.dto';
 import { UpdateSalesOrderDto } from './dto/update-sales-order.dto';
+import { generateInvoiceNumber } from './invoice-number';
 import { generateSoNumber } from './so-number';
 import { assertSoEditable, assertSoTransition } from './state-machine';
 
 const VAT_RATE = '0.075';
+// Stored vatRate snapshot on the invoice, Decimal(5,4). 7.5%.
+const INVOICE_VAT_RATE = '0.0750';
 
 const SO_DETAIL_INCLUDE = {
   customer: {
@@ -188,6 +191,74 @@ export class SalesOrdersService {
       data: { status: SalesOrderStatus.AWAITING_PAYMENT },
       include: SO_DETAIL_INCLUDE,
     });
+  }
+
+  /**
+   * Generate the invoice for a sales order at AWAITING_PAYMENT or beyond. The
+   * invoice SNAPSHOTS the financial values at this moment (vatRate, vatAmount,
+   * total); it is a fixed document and does not recompute from the SO later.
+   * One invoice per SO is enforced by the salesOrderId unique constraint
+   * (P2002 rewrapped to 409). DRAFT or CANCELLED orders are rejected (409).
+   */
+  async generateInvoice(salesOrderId: string) {
+    const so = await this.findOne(salesOrderId);
+    if (
+      so.status === SalesOrderStatus.DRAFT ||
+      so.status === SalesOrderStatus.CANCELLED
+    ) {
+      throw new ConflictException(
+        `Cannot generate an invoice for a ${so.status} sales order; it must be at AWAITING_PAYMENT or beyond.`,
+      );
+    }
+
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const invoiceNumber = await generateInvoiceNumber(tx);
+        return tx.invoice.create({
+          data: {
+            salesOrderId,
+            invoiceNumber,
+            vatRate: new Prisma.Decimal(INVOICE_VAT_RATE),
+            vatAmount: so.vatAmount,
+            total: so.total,
+            // pdfDocumentId stays null; PDF generation is deferred.
+          },
+        });
+      });
+    } catch (err) {
+      if (
+        isUniqueViolationOn(err, {
+          index: 'invoices_salesOrderId_key',
+          fields: ['salesOrderId'],
+        })
+      ) {
+        throw new ConflictException(
+          `Sales order ${salesOrderId} already has an invoice (one invoice per order).`,
+        );
+      }
+      throw err;
+    }
+  }
+
+  async getInvoiceForSo(salesOrderId: string) {
+    await this.findOne(salesOrderId);
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { salesOrderId },
+    });
+    if (!invoice) {
+      throw new NotFoundException(
+        `Sales order ${salesOrderId} has no invoice yet`,
+      );
+    }
+    return invoice;
+  }
+
+  async getInvoice(id: string) {
+    const invoice = await this.prisma.invoice.findUnique({ where: { id } });
+    if (!invoice) {
+      throw new NotFoundException(`Invoice ${id} not found`);
+    }
+    return invoice;
   }
 
   private async assertCustomerAndDiscount(
