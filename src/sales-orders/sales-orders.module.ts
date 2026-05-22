@@ -10,5 +10,7 @@ import { SalesOrdersService } from './sales-orders.service';
   imports: [PricingModule],
   controllers: [SalesOrdersController, InvoicesController, DeliveryController],
   providers: [SalesOrdersService, DeliveryService],
+  // Exported so the sync intake layer can reuse create (idempotent wrapper).
+  exports: [SalesOrdersService],
 })
 export class SalesOrdersModule {}

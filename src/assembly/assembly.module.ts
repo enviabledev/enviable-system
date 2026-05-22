@@ -5,5 +5,7 @@ import { AssemblyService } from './assembly.service';
 @Module({
   controllers: [AssemblyController],
   providers: [AssemblyService],
+  // Exported so the sync intake layer can reuse start/complete (idempotent wrapper).
+  exports: [AssemblyService],
 })
 export class AssemblyModule {}

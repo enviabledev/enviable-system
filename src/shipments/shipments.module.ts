@@ -7,5 +7,7 @@ import { ShipmentsService } from './shipments.service';
 @Module({
   controllers: [ShipmentsController, LandedCostsController],
   providers: [ShipmentsService, LandedCostsService],
+  // Exported so the sync intake layer can reuse receiveUnits (idempotent wrapper).
+  exports: [ShipmentsService],
 })
 export class ShipmentsModule {}
