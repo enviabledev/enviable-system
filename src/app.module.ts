@@ -11,6 +11,7 @@ import { CostVisibilityInterceptor } from './common/interceptors/cost-visibility
 import { CounterpartiesModule } from './counterparties/counterparties.module';
 import { CustomersModule } from './customers/customers.module';
 import { HistoricalLoadModule } from './historical-load/historical-load.module';
+import { PaymentsModule } from './payments/payments.module';
 import { PricingModule } from './pricing/pricing.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProductsModule } from './products/products.module';
@@ -41,6 +42,7 @@ import { UnitsModule } from './units/units.module';
     CustomersModule,
     PricingModule,
     SalesOrdersModule,
+    PaymentsModule,
   ],
   providers: [
     // Global guards execute in registration order. AuthGuard MUST be first: it
