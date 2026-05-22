@@ -26,7 +26,9 @@
     "argon2": "^0.44.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
+    "csv-parse": "^6.2.1",
     "express-session": "^1.19.0",
+    "multer": "^2.1.1",
     "prisma": "^6.19.3",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2"
@@ -36,6 +38,7 @@
     "@nestjs/schematics": "^10.2.3",
     "@types/express": "^5.0.6",
     "@types/express-session": "^1.19.0",
+    "@types/multer": "^2.1.0",
     "@types/node": "^25.9.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
