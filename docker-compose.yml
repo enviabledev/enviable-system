@@ -1,0 +1,30 @@
+# Local development Postgres for the Enviable Inventory and Operations System.
+#
+# NOTE on credentials: this matches the live dev container that has been in use
+# since M0 (POSTGRES_USER=user / POSTGRES_PASSWORD=pass / POSTGRES_DB=enviable),
+# which is what .env DATABASE_URL authenticates with and what the migrated and
+# seeded data lives under. The original scaffold spec named an enviable_app
+# role, but the established container and .env use these credentials, so the
+# compose file matches reality to stay consistent with the working database.
+#
+# The currently-running container was created with `docker run` (predates this
+# file) and holds the M0 to M2 data in its writable layer, not in the named
+# volume below. Do not `docker compose up -d` over it (the name and host port
+# 5433 are already taken) and do not `docker compose down -v` it. Bringing the
+# database under compose management requires a deliberate data migration.
+services:
+  enviable-postgres:
+    image: postgres:16
+    container_name: enviable-postgres
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: enviable
+    ports:
+      - "5433:5432"
+    volumes:
+      - enviable_pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  enviable_pgdata:
