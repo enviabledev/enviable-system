@@ -7,6 +7,7 @@ import { AuthModule } from './auth/auth.module';
 import { AuthGuard } from './common/guards/auth.guard';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 import { CostVisibilityInterceptor } from './common/interceptors/cost-visibility.interceptor';
+import { CounterpartiesModule } from './counterparties/counterparties.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProductsModule } from './products/products.module';
 
@@ -17,6 +18,7 @@ import { ProductsModule } from './products/products.module';
     AuthModule,
     AuditModule,
     ProductsModule,
+    CounterpartiesModule,
   ],
   providers: [
     // Global guards execute in registration order. AuthGuard MUST be first: it
