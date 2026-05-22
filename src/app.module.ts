@@ -23,6 +23,7 @@ import { SalesOrdersModule } from './sales-orders/sales-orders.module';
 import { ShipmentsModule } from './shipments/shipments.module';
 import { SparePartsModule } from './spare-parts/spare-parts.module';
 import { StockMovementsModule } from './stock-movements/stock-movements.module';
+import { SyncModule } from './sync/sync.module';
 import { UnitsModule } from './units/units.module';
 
 @Module({
@@ -47,6 +48,7 @@ import { UnitsModule } from './units/units.module';
     PaymentsModule,
     ReturnsModule,
     ReportsModule,
+    SyncModule,
   ],
   providers: [
     // Global guards execute in registration order. AuthGuard MUST be first: it
