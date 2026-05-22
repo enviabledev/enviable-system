@@ -166,11 +166,27 @@ These are real, accepted issues parked for later. Do not lose them.
   use `pg_advisory_xact_lock` keyed on distinct constants; correct by
   construction but not verified under contention. Add a focused concurrency
   test before production cutover.
-- **Audit-table DB immutability (production hardening)**: the REVOKE
-  UPDATE/DELETE on `audit_log_entries` (and `period_snapshots`,
-  `stock_valuation_lines`) is deferred until a non-owner `enviable_app` DB role
-  exists. App-layer guarantee is real (AuditService only creates); DB-layer
-  enforcement comes with the role-separation migration.
+- **Audit-table DB immutability (DONE)**: the `enviable_app` non-owner role and
+  the REVOKE UPDATE/DELETE/TRUNCATE on `audit_log_entries`, `period_snapshots`,
+  and `stock_valuation_lines` are implemented in migration
+  `20260523000000_database_level_immutability`, plus a block-only trigger
+  (`enviable_block_immutable_mutation`) on all three that RAISEs on UPDATE/DELETE
+  as defence in depth behind the REVOKE. Two layers, each doing one thing: REVOKE
+  denies the non-owner app (permission denied before any trigger), the trigger
+  denies absolutely (fires for every role, including the owner). No dblink, no
+  autonomous-commit logging in the trigger (that approach was considered and
+  rejected: a security-critical block must not depend on runtime dblink config,
+  and the block, not the log, is the load-bearing guarantee). Migrations still
+  run as the OWNER (a non-owner cannot create tables); only the app RUNTIME
+  connects as `enviable_app`. Local dev may keep connecting as the owner (the
+  REVOKEs simply do not bite on a single-user dev DB); production points
+  `DATABASE_URL` at `enviable_app`. The operator sets the role password out of
+  band (never committed). REMAINING (deferred, application layer): RECORDING a
+  blocked attempt as a `DELETE_BLOCKED` audit entry. When a mutation is rejected,
+  the app should catch the error and write a `DELETE_BLOCKED` entry via the
+  normal `AuditService.write` INSERT path (a separate, cleanly committing
+  transaction that carries the request context the DB trigger lacks). Slot this
+  into the observability/error-handling work, not the database.
 - **Per-line vs per-invoice VAT rounding (M5, go-live prerequisite)**:
   current implementation rounds VAT once at the order level
   (`(subtotal - discountTotal) * 0.075` to 2dp). Per-line rounded VAT can
@@ -378,6 +394,30 @@ mirror DEMO so the internal-use round-trip the adjustment set requires is
 reachable. A diverted asset returns; the system honestly records the diversion
 period in the unit's movement history. Whether an internally-used unit is then
 sold as "new" is a business and disclosure question, not a system one.
+
+## class-validator whitelist strips undecorated DTO fields
+
+`whitelist: true` (the global ValidationPipe, and any direct `validate()` call)
+REMOVES every property that carries no validation decorator. This is correct for
+most DTOs, but it silently drops fields meant to hold free-form values. The sync
+field-merge `FieldChangeDto.oldValue/newValue` are intentionally `unknown` (a
+field patch can carry any value); under whitelist they were stripped before the
+merge ran, so the service saw `undefined` and Prisma quietly ignored the
+undefined fields. The symptom was the worst kind: applied-but-not-persisted with
+no error, the response even reported the field as "applied". Fix: mark a
+deliberately free-form field with `@Allow()` so whitelist keeps it. The hazard
+applies to any DTO with intentionally typeless fields. It surfaced only because
+the verification asserted real DB persistence, not the response shape; assert
+the persisted state for any write, never trust the echo.
+
+## Stocks report: in-stock value excludes sold (ratified)
+
+The stocks report's market-value KPI sums `currentMarketPrice` over the on-hand
+buckets only (CKD + InAssembly + CBU), excluding Sold and Other. This is the
+correct meaning of "stock value": the value of inventory on hand to sell, not
+what has already been sold or written off. Each variant row exposes
+`inStockCount` so the figure is auditable. A "total sold value" is a different
+figure and lives in the revenue report (recognised at release), not here.
 
 ## Canonical P2002 (unique-violation) detection
 
