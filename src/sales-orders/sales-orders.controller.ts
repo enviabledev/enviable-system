@@ -81,4 +81,14 @@ export class SalesOrdersController {
   getInvoice(@Param('id') id: string) {
     return this.salesOrders.getInvoiceForSo(id);
   }
+
+  // Release: sells the allocated units and advances the order. Writes issuedById.
+  // Gated on payment.confirm (the same authority that confirms payment).
+  @Post(':id/authorise-release')
+  @HttpCode(200)
+  @RequirePermissions('payment.confirm')
+  @Audit('salesorder.release', 'SalesOrder')
+  authoriseRelease(@Param('id') id: string, @CurrentUser() actor: Principal) {
+    return this.salesOrders.authoriseRelease(id, actor.id);
+  }
 }

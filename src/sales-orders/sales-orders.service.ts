@@ -6,6 +6,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  MovementReferenceType,
+  MovementType,
+  PaymentStatus,
   Prisma,
   SaleForm,
   SalesChannel,
@@ -14,6 +17,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { isUniqueViolationOn } from '../common/prisma-errors';
+import { transitionUnit } from '../units/transition-unit';
 import { PricingService } from '../pricing/pricing.service';
 import { CreateSalesOrderDto } from './dto/create-sales-order.dto';
 import { QuerySalesOrdersDto } from './dto/query-sales-orders.dto';
@@ -259,6 +263,87 @@ export class SalesOrdersService {
       throw new NotFoundException(`Invoice ${id} not found`);
     }
     return invoice;
+  }
+
+  /**
+   * Authorise release: the point where units actually leave inventory and sell.
+   * In ONE transaction: re-check the order is at PAYMENT_RECEIVED AND re-aggregate
+   * the SUM of CONFIRMED payments and assert it covers the total (Invariant I-4,
+   * defence-in-depth: the payment SUM is recomputed here, NOT inferred from the
+   * status, so a status set by any other path cannot release an underpaid order).
+   * Then create the ReleaseAuthorisation and transition every allocated unit to
+   * its SOLD state via transitionUnit (SALE movement, I-3 inherited), set soldAt,
+   * and advance the order to RELEASE_AUTHORISED. All or nothing.
+   */
+  async authoriseRelease(salesOrderId: string, actorId: string) {
+    const existing = await this.findOne(salesOrderId);
+    // First gate: only PAYMENT_RECEIVED -> RELEASE_AUTHORISED is a legal move.
+    assertSoTransition(existing.status, SalesOrderStatus.RELEASE_AUTHORISED);
+
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.salesOrder.findUniqueOrThrow({
+        where: { id: salesOrderId },
+        include: { lines: true },
+      });
+      // Re-check the status gate inside the transaction.
+      assertSoTransition(order.status, SalesOrderStatus.RELEASE_AUTHORISED);
+
+      // I-4 defence-in-depth: recompute the confirmed-payment SUM here and
+      // require it to cover the total. Do NOT trust the PAYMENT_RECEIVED status.
+      const agg = await tx.payment.aggregate({
+        _sum: { amount: true },
+        where: { salesOrderId, status: PaymentStatus.CONFIRMED },
+      });
+      const confirmed = agg._sum.amount ?? new Prisma.Decimal(0);
+      if (confirmed.lt(order.total)) {
+        throw new ConflictException(
+          `Invariant I-4: confirmed payments (${confirmed.toString()}) do not cover the order total (${order.total.toString()}). Release refused.`,
+        );
+      }
+
+      const refPayment = await tx.payment.findFirst({
+        where: { salesOrderId, status: PaymentStatus.CONFIRMED },
+        orderBy: [{ receivedAt: 'desc' }, { createdAt: 'desc' }],
+        select: { id: true },
+      });
+
+      await tx.releaseAuthorisation.create({
+        data: {
+          salesOrderId,
+          issuedById: actorId,
+          referencePaymentId: refPayment?.id ?? null,
+        },
+      });
+
+      const soldAt = new Date();
+      for (const line of order.lines) {
+        if (!line.unitId) {
+          throw new ConflictException(
+            `Sales order line ${line.id} has no allocated unit; cannot release.`,
+          );
+        }
+        const target =
+          line.saleForm === SaleForm.CKD
+            ? UnitStatus.SOLD_AS_CKD
+            : UnitStatus.SOLD_AS_CBU;
+        await transitionUnit(tx, line.unitId, target, MovementType.SALE, {
+          actorId,
+          referenceType: MovementReferenceType.SALES_ORDER,
+          referenceId: salesOrderId,
+          unitData: { soldAt },
+        });
+      }
+
+      await tx.salesOrder.update({
+        where: { id: salesOrderId },
+        data: { status: SalesOrderStatus.RELEASE_AUTHORISED },
+      });
+
+      return tx.salesOrder.findUniqueOrThrow({
+        where: { id: salesOrderId },
+        include: SO_DETAIL_INCLUDE,
+      });
+    });
   }
 
   private async assertCustomerAndDiscount(
