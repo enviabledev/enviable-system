@@ -28,6 +28,14 @@ import { generateSoNumber } from './so-number';
 import { assertSoEditable, assertSoTransition } from './state-machine';
 
 const VAT_RATE = '0.075';
+
+// Cancellable order states. A RELEASE_AUTHORISED-or-later order is NOT here:
+// its units are SOLD and committed, so reversal is the returns/refund flow.
+const CANCELLABLE_STATUSES: SalesOrderStatus[] = [
+  SalesOrderStatus.DRAFT,
+  SalesOrderStatus.AWAITING_PAYMENT,
+  SalesOrderStatus.PAYMENT_RECEIVED,
+];
 // Stored vatRate snapshot on the invoice, Decimal(5,4). 7.5%.
 const INVOICE_VAT_RATE = '0.0750';
 
@@ -343,6 +351,67 @@ export class SalesOrdersService {
         where: { id: salesOrderId },
         include: SO_DETAIL_INCLUDE,
       });
+    });
+  }
+
+  /**
+   * Cancel a sales order. Only DRAFT, AWAITING_PAYMENT, or PAYMENT_RECEIVED are
+   * cancellable; a RELEASE_AUTHORISED-or-later order is rejected (409, directed
+   * to returns/refund) because its units are already SOLD and committed. In one
+   * transaction: null each line's unitId to free the soft reservation (the
+   * one_active_so_line_per_unit index is WHERE unitId IS NOT NULL, so nulling it
+   * lifts the I-11 block and the unit can be allocated to another order), write
+   * the real cancellation columns, and move the order to CANCELLED. No unit
+   * state changes (allocation never moved units out of warehouse status). If
+   * confirmed payments exist, surface (do not process) a refund-outstanding flag
+   * and amount.
+   */
+  async cancel(salesOrderId: string, reason: string, actorId: string) {
+    const so = await this.findOne(salesOrderId);
+    if (!CANCELLABLE_STATUSES.includes(so.status)) {
+      throw new ConflictException(
+        `Sales order ${so.soNumber} is ${so.status} and cannot be cancelled. A released or later order is handled via the returns/refund flow (its units are sold and committed).`,
+      );
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.salesOrder.findUniqueOrThrow({
+        where: { id: salesOrderId },
+      });
+      if (!CANCELLABLE_STATUSES.includes(order.status)) {
+        throw new ConflictException(
+          `Sales order ${order.soNumber} is ${order.status} and cannot be cancelled.`,
+        );
+      }
+      assertSoTransition(order.status, SalesOrderStatus.CANCELLED);
+
+      // Surface an outstanding refund for any confirmed payments (not processed
+      // here; refund handling is out of scope).
+      const agg = await tx.payment.aggregate({
+        _sum: { amount: true },
+        where: { salesOrderId, status: PaymentStatus.CONFIRMED },
+      });
+      const refundAmount = agg._sum.amount ?? new Prisma.Decimal(0);
+      const refundOutstanding = refundAmount.gt(0);
+
+      // Free the soft reservation: null each line's unitId so the I-11 index
+      // releases the units. No unit state transition (they were never moved).
+      await tx.salesOrderLine.updateMany({
+        where: { salesOrderId },
+        data: { unitId: null },
+      });
+
+      const updated = await tx.salesOrder.update({
+        where: { id: salesOrderId },
+        data: {
+          status: SalesOrderStatus.CANCELLED,
+          cancellationReason: reason,
+          cancelledAt: new Date(),
+          cancelledById: actorId,
+        },
+        include: SO_DETAIL_INCLUDE,
+      });
+      return { ...updated, refundOutstanding, refundAmount };
     });
   }
 

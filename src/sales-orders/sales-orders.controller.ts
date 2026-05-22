@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { Principal } from '../auth/auth.service';
 import { Audit, CurrentUser, RequirePermissions } from '../common/decorators';
+import { CancelSalesOrderDto } from './dto/cancel-sales-order.dto';
 import { CreateSalesOrderDto } from './dto/create-sales-order.dto';
 import { QuerySalesOrdersDto } from './dto/query-sales-orders.dto';
 import { UpdateSalesOrderDto } from './dto/update-sales-order.dto';
@@ -90,5 +91,19 @@ export class SalesOrdersController {
   @Audit('salesorder.release', 'SalesOrder')
   authoriseRelease(@Param('id') id: string, @CurrentUser() actor: Principal) {
     return this.salesOrders.authoriseRelease(id, actor.id);
+  }
+
+  // Cancel: frees the soft-reserved units (nulls line unitId) and writes the
+  // real cancellation columns. Writes cancelledById.
+  @Post(':id/cancel')
+  @HttpCode(200)
+  @RequirePermissions('salesorder.create')
+  @Audit('salesorder.cancel', 'SalesOrder')
+  cancel(
+    @Param('id') id: string,
+    @Body() dto: CancelSalesOrderDto,
+    @CurrentUser() actor: Principal,
+  ) {
+    return this.salesOrders.cancel(id, dto.reason, actor.id);
   }
 }
