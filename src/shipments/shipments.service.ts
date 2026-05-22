@@ -56,6 +56,18 @@ const SHIPMENT_INCLUDE = {
   freightForwarder: CP_SUMMARY,
   clearingAgent: CP_SUMMARY,
   insuranceCompany: CP_SUMMARY,
+  // Units carry landedCost. Exposing them on the (non-cost-gated) shipment
+  // detail lets the global CostVisibilityInterceptor strip landedCost for
+  // callers without costdata.view (Invariant I-8).
+  units: {
+    select: {
+      id: true,
+      engineNumber: true,
+      status: true,
+      landedCost: true,
+    },
+    orderBy: { engineNumber: 'asc' },
+  },
 } as const;
 
 @Injectable()
