@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { Prisma, ProformaInvoiceStatus, PurchaseOrderStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { isUniqueViolationOn } from '../common/prisma-errors';
 import { poRank } from '../purchase-orders/state-machine';
 import { CreateProformaInvoiceDto } from './dto/create-proforma-invoice.dto';
 import { PiLineDto } from './dto/pi-line.dto';
@@ -17,34 +18,12 @@ const PI_INCLUDE = {
   },
 } as const;
 
-const ACTIVE_PI_INDEX = 'one_active_pi_per_po';
-
-/**
- * P2002 unique-violation detection for the partial index that enforces I-5.
- * Prisma 6 may surface the offender in meta.target (string or string[]) or in
- * meta.constraint, so all shapes are checked.
- */
+/** P2002 on the one_active_pi_per_po partial index that enforces I-5. */
 function isActivePiIndexViolation(err: unknown): boolean {
-  if (
-    err instanceof Prisma.PrismaClientKnownRequestError &&
-    err.code === 'P2002'
-  ) {
-    const meta = (err.meta ?? {}) as {
-      target?: unknown;
-      constraint?: unknown;
-    };
-    const { target, constraint } = meta;
-    if (typeof target === 'string' && target.includes(ACTIVE_PI_INDEX)) {
-      return true;
-    }
-    if (Array.isArray(target) && target.includes(ACTIVE_PI_INDEX)) {
-      return true;
-    }
-    if (typeof constraint === 'string' && constraint === ACTIVE_PI_INDEX) {
-      return true;
-    }
-  }
-  return false;
+  return isUniqueViolationOn(err, {
+    index: 'one_active_pi_per_po',
+    fields: ['purchaseOrderId'],
+  });
 }
 
 @Injectable()

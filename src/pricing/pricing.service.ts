@@ -6,32 +6,21 @@ import {
 } from '@nestjs/common';
 import { PriceListEntry, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { isUniqueViolationOn } from '../common/prisma-errors';
 import { QueryPriceListDto } from './dto/query-price-list.dto';
 import { SetPriceDto } from './dto/set-price.dto';
-
-const CURRENT_PRICE_INDEX = 'one_current_price';
 
 const PRICE_INCLUDE = {
   productVariant: { select: { id: true, supplierSkuCode: true } },
   customerTier: { select: { id: true, name: true } },
 } as const;
 
-/** P2002 on the one_current_price partial index (Prisma 6 meta shapes). */
+/** P2002 on the one_current_price partial index (at most one current per variant/tier). */
 function isCurrentPriceViolation(err: unknown): boolean {
-  if (
-    err instanceof Prisma.PrismaClientKnownRequestError &&
-    err.code === 'P2002'
-  ) {
-    const meta = (err.meta ?? {}) as { target?: unknown; constraint?: unknown };
-    const { target, constraint } = meta;
-    if (typeof target === 'string' && target.includes(CURRENT_PRICE_INDEX))
-      return true;
-    if (Array.isArray(target) && target.includes(CURRENT_PRICE_INDEX))
-      return true;
-    if (typeof constraint === 'string' && constraint === CURRENT_PRICE_INDEX)
-      return true;
-  }
-  return false;
+  return isUniqueViolationOn(err, {
+    index: 'one_current_price',
+    fields: ['productVariantId', 'customerTierId'],
+  });
 }
 
 @Injectable()
