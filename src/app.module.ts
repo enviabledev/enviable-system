@@ -10,6 +10,7 @@ import { CostVisibilityInterceptor } from './common/interceptors/cost-visibility
 import { CounterpartiesModule } from './counterparties/counterparties.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProductsModule } from './products/products.module';
+import { ProformaInvoicesModule } from './proforma-invoices/proforma-invoices.module';
 import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
 
 @Module({
@@ -21,6 +22,7 @@ import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
     ProductsModule,
     CounterpartiesModule,
     PurchaseOrdersModule,
+    ProformaInvoicesModule,
   ],
   providers: [
     // Global guards execute in registration order. AuthGuard MUST be first: it

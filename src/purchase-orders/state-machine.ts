@@ -24,6 +24,28 @@ export const PO_STATE_TRANSITIONS: Record<
   [S.CANCELLED]: [],
 };
 
+/**
+ * Linear lifecycle order (CANCELLED is off-line and not ranked). Used by
+ * cross-aggregate effects, for example PI approval pulling the PO forward to
+ * PI_RECEIVED only when the PO is not already at or past that point.
+ */
+export const PO_LIFECYCLE_ORDER: PurchaseOrderStatus[] = [
+  S.DRAFT,
+  S.PENDING_APPROVAL,
+  S.APPROVED,
+  S.SENT_TO_SUPPLIER,
+  S.PI_RECEIVED,
+  S.AWAITING_SHIPMENT,
+  S.PARTIALLY_RECEIVED,
+  S.FULLY_RECEIVED,
+  S.CLOSED,
+];
+
+/** Rank of a status in the linear lifecycle, or -1 for CANCELLED. */
+export function poRank(status: PurchaseOrderStatus): number {
+  return PO_LIFECYCLE_ORDER.indexOf(status);
+}
+
 /** Throws 409 if the transition is not in the legal map, naming allowed states. */
 export function assertPoTransition(
   from: PurchaseOrderStatus,
