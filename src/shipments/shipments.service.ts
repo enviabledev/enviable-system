@@ -49,6 +49,69 @@ function uniqueUnitField(
   return null;
 }
 
+type UnitUniqueField = 'engineNumber' | 'chassisNumber';
+
+interface ReceiptUnitPosition {
+  manifestLineId: string;
+  unitIndex: number;
+}
+
+interface ReceiptPositionedPair extends ReceiptUnitPosition {
+  engineNumber: string;
+  chassisNumber: string;
+}
+
+/**
+ * One duplicate found by the exhaustive receipt pre-flight. `kind` is whether
+ * the value collides within the submitted batch or against an existing row.
+ * `rows` carries every position the offending value appears at in the
+ * submission (for IN_BATCH_DUP that's 2+ positions; for AGAINST_DB it's the
+ * submitted position(s) carrying the colliding value). `message` keeps the
+ * legacy single-violation phrasing so older string-parsing clients still match.
+ */
+interface ReceiptDuplicateViolation {
+  kind: 'IN_BATCH_DUP' | 'AGAINST_DB';
+  field: UnitUniqueField;
+  value: string;
+  rows: ReceiptUnitPosition[];
+  message: string;
+}
+
+function inBatchDupMessage(field: UnitUniqueField, value: string): string {
+  return `Duplicate ${field} in request batch: ${value}`;
+}
+
+function againstDbMessage(field: UnitUniqueField, value: string): string {
+  return `${field} already exists: ${value}`;
+}
+
+/**
+ * Build the structured 409 body for a receipt-batch rejection. The top-level
+ * `message` is a human summary suitable for a generic-fallback renderer; the
+ * `violations` array is the structured detail a client uses to highlight every
+ * offending cell (each violation names its field, value, and the row position(s)
+ * carrying it). Nest does not auto-merge statusCode/error onto a thrown-object
+ * body, so they are set explicitly. All-or-nothing is preserved upstream: this
+ * is only ever thrown when zero units have been written.
+ */
+function buildReceiptConflictBody(violations: ReceiptDuplicateViolation[]): {
+  statusCode: number;
+  error: string;
+  message: string;
+  violations: ReceiptDuplicateViolation[];
+} {
+  const summary =
+    violations.length === 1
+      ? `Receipt batch rejected: 1 duplicate detected (${violations[0].message}). No units were created.`
+      : `Receipt batch rejected: ${violations.length} duplicates detected. No units were created.`;
+  return {
+    statusCode: 409,
+    error: 'Conflict',
+    message: summary,
+    violations,
+  };
+}
+
 const CP_SUMMARY = { select: { id: true, name: true, type: true } } as const;
 
 const SHIPMENT_INCLUDE = {
@@ -216,50 +279,31 @@ export class ShipmentsService {
     dto: ReceiveUnitsDto,
     actorUserId: string,
   ) {
-    const pairs = dto.lines.flatMap((line) =>
-      line.units.map((unit) => ({
+    const positioned: ReceiptPositionedPair[] = dto.lines.flatMap((line) =>
+      line.units.map((unit, unitIndex) => ({
         manifestLineId: line.manifestLineId,
+        unitIndex,
         engineNumber: unit.engineNumber,
         chassisNumber: unit.chassisNumber,
       })),
     );
+    const pairs = positioned.map((p) => ({
+      manifestLineId: p.manifestLineId,
+      engineNumber: p.engineNumber,
+      chassisNumber: p.chassisNumber,
+    }));
 
-    // Pre-flight: reject in-batch duplicates naming the offending number.
-    const seenEngine = new Set<string>();
-    const seenChassis = new Set<string>();
-    for (const pair of pairs) {
-      if (seenEngine.has(pair.engineNumber)) {
-        throw new ConflictException(
-          `Duplicate engineNumber in request batch: ${pair.engineNumber}`,
-        );
-      }
-      if (seenChassis.has(pair.chassisNumber)) {
-        throw new ConflictException(
-          `Duplicate chassisNumber in request batch: ${pair.chassisNumber}`,
-        );
-      }
-      seenEngine.add(pair.engineNumber);
-      seenChassis.add(pair.chassisNumber);
-    }
-
-    // Pre-flight: reject duplicates against the DB naming the offending number.
-    const dupEngine = await this.prisma.unit.findFirst({
-      where: { engineNumber: { in: [...seenEngine] } },
-      select: { engineNumber: true },
-    });
-    if (dupEngine) {
-      throw new ConflictException(
-        `engineNumber already exists: ${dupEngine.engineNumber}`,
-      );
-    }
-    const dupChassis = await this.prisma.unit.findFirst({
-      where: { chassisNumber: { in: [...seenChassis] } },
-      select: { chassisNumber: true },
-    });
-    if (dupChassis) {
-      throw new ConflictException(
-        `chassisNumber already exists: ${dupChassis.chassisNumber}`,
-      );
+    // Exhaustive pre-flight: collect ALL duplicate violations across BOTH
+    // unique fields (engineNumber and chassisNumber) and BOTH collision kinds
+    // (in-batch and against-DB) in a single structured 409, so a clerk fixes
+    // every problem in one pass instead of the "fix one, resubmit, hit the
+    // next" loop. Mirrors the I-11 pre-flight pattern: the DB unique
+    // constraints (units_engineNumber_key, units_chassisNumber_key) stay the
+    // authoritative backstop for the race window; this layer just front-runs
+    // them with a complete friendly report in the common case.
+    const preFlight = await this.collectReceiptDuplicates(positioned);
+    if (preFlight.length > 0) {
+      throw new ConflictException(buildReceiptConflictBody(preFlight));
     }
 
     const warehouseId = await this.defaultWarehouseId();
@@ -343,12 +387,107 @@ export class ShipmentsService {
     } catch (err) {
       const field = uniqueUnitField(err);
       if (field) {
+        // Race-window enrichment: a concurrent receipt slipped between the
+        // pre-flight and the insert and now holds one of our submitted
+        // values. Re-run the pre-flight to name the colliding value(s) in
+        // the same structured shape; if the lookup somehow finds nothing
+        // (the other side rolled back in the same window), fall back to the
+        // legacy field-only message so the rewrap path still produces a 409.
+        const racing = await this.collectReceiptDuplicates(positioned);
+        if (racing.length > 0) {
+          throw new ConflictException(buildReceiptConflictBody(racing));
+        }
         throw new ConflictException(
           `Duplicate ${field}: a unit with this ${field} already exists (unique violation).`,
         );
       }
       throw err;
     }
+  }
+
+  /**
+   * Exhaustive duplicate detection for a receipt batch. Returns one violation
+   * per offending value: in-batch duplicates carry every position that holds
+   * the duplicated value; against-DB collisions carry the position(s) of the
+   * submitted row(s) whose value already exists. A value that is BOTH an
+   * in-batch duplicate AND already in the DB produces both violations, so the
+   * clerk sees the full picture (deduplicating within the batch still leaves
+   * the DB collision). One DB read covers both fields via an OR; an empty
+   * batch returns empty without querying.
+   */
+  private async collectReceiptDuplicates(
+    positioned: ReceiptPositionedPair[],
+  ): Promise<ReceiptDuplicateViolation[]> {
+    const violations: ReceiptDuplicateViolation[] = [];
+
+    for (const field of ['engineNumber', 'chassisNumber'] as const) {
+      const byValue = new Map<string, ReceiptUnitPosition[]>();
+      for (const p of positioned) {
+        const value = p[field];
+        if (!byValue.has(value)) byValue.set(value, []);
+        byValue.get(value)!.push({
+          manifestLineId: p.manifestLineId,
+          unitIndex: p.unitIndex,
+        });
+      }
+      for (const [value, rows] of byValue) {
+        if (rows.length > 1) {
+          violations.push({
+            kind: 'IN_BATCH_DUP',
+            field,
+            value,
+            rows,
+            message: inBatchDupMessage(field, value),
+          });
+        }
+      }
+    }
+
+    const submittedEngines = [
+      ...new Set(positioned.map((p) => p.engineNumber)),
+    ];
+    const submittedChassis = [
+      ...new Set(positioned.map((p) => p.chassisNumber)),
+    ];
+    if (submittedEngines.length === 0 && submittedChassis.length === 0) {
+      return violations;
+    }
+    const existing = await this.prisma.unit.findMany({
+      where: {
+        OR: [
+          { engineNumber: { in: submittedEngines } },
+          { chassisNumber: { in: submittedChassis } },
+        ],
+      },
+      select: { engineNumber: true, chassisNumber: true },
+    });
+    const dbEngines = new Set(existing.map((u) => u.engineNumber));
+    const dbChassis = new Set(existing.map((u) => u.chassisNumber));
+
+    for (const field of ['engineNumber', 'chassisNumber'] as const) {
+      const colliding = field === 'engineNumber' ? dbEngines : dbChassis;
+      const rowsByValue = new Map<string, ReceiptUnitPosition[]>();
+      for (const p of positioned) {
+        const value = p[field];
+        if (!colliding.has(value)) continue;
+        if (!rowsByValue.has(value)) rowsByValue.set(value, []);
+        rowsByValue.get(value)!.push({
+          manifestLineId: p.manifestLineId,
+          unitIndex: p.unitIndex,
+        });
+      }
+      for (const [value, rows] of rowsByValue) {
+        violations.push({
+          kind: 'AGAINST_DB',
+          field,
+          value,
+          rows,
+          message: againstDbMessage(field, value),
+        });
+      }
+    }
+
+    return violations;
   }
 
   async resolveVariance(shipmentId: string, dto: ResolveVarianceDto) {

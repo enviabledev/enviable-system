@@ -419,29 +419,61 @@ what has already been sold or written off. Each variant row exposes
 `inStockCount` so the figure is auditable. A "total sold value" is a different
 figure and lives in the revenue report (recognised at release), not here.
 
-## Invariant-violation messages name the offending entity
+## Invariant-violation messages name the offending entity (exhaustively)
 
 When a unique-index or invariant violation is rewrapped to a 409, the message
 must name the offending entity (the engine number, the SKU, the SO number,
-whatever the natural identifier is for the colliding row). Generic messages
-like "a unit is already allocated to another active sales order line" force
-the client to detective which row collided; named messages let the client
-highlight the exact line, the same way the receipt flow has always done
-(`engineNumber already exists: RCV-GS-001`).
+whatever the natural identifier is for the colliding row) and, when a single
+request can produce multiple violations, name ALL of them in one response so
+the client fixes the whole batch in one pass. Generic messages like "a unit
+is already allocated to another active sales order line" force the client to
+detective which row collided; one-at-a-time messages force a "fix one,
+resubmit, hit the next" loop on multi-row submissions. Named, exhaustive
+messages let the client highlight every affected cell at once.
 
-This was added to the I-11 path after a frontend build surfaced that a generic
-message made the conflict panel unable to point at the offending PO line.
-Implementation pattern: a pre-flight lookup before the transaction names the
-unit in the typical case; the P2002 catch performs the same lookup as
-race-window enrichment, so a concurrent allocation that slips between the
-pre-flight and the insert still gets a named message. Both paths route through
-`formatI11Message` in `sales-orders.service.ts`. The I-11 partial unique index
-remains the authoritative enforcer; the pre-flight is a usability layer, not
-the safety layer.
+Implementation pattern (mirrored by both the I-11 path in
+`sales-orders.service.ts` and the receipt path in `shipments.service.ts`): a
+pre-flight lookup before the transaction collects ALL violations and returns
+them in one structured 409 in the typical case; the P2002 catch re-runs the
+same collector as race-window enrichment, so a concurrent insert that slips
+between the pre-flight and the actual write still gets the same structured
+shape. The DB unique constraints remain the authoritative enforcer (no
+duplicate ever persists, even in a race); the pre-flight is a usability layer,
+not the safety layer. If the pre-flight ever becomes "how we prevent
+duplicates," that is a regression.
+
+For multi-field surfaces (receipt has TWO unique fields, engineNumber AND
+chassisNumber, with FOUR collision kinds: in-batch dup and against-DB for
+each), the structured body is:
+
+```
+{
+  statusCode: 409,
+  error: 'Conflict',
+  message: '<human summary>',
+  violations: [
+    { kind: 'IN_BATCH_DUP' | 'AGAINST_DB',
+      field: 'engineNumber' | 'chassisNumber' | ...,
+      value: <offending value>,
+      rows: [{ manifestLineId, unitIndex }, ...],   // 2+ rows for IN_BATCH_DUP
+      message: '<per-violation legacy phrasing>' }, // back-compat for parsers
+    ...
+  ]
+}
+```
+
+The per-violation `message` field preserves the original single-line phrasing
+(`Duplicate engineNumber in request batch: X`, `engineNumber already exists:
+Y`) so clients with regex extraction still match; the new structured `rows`
+carries the position info that lets the client highlight the specific cell.
+A value that is BOTH an in-batch dup and against-DB produces both violations
+(deduplicating within the batch still leaves the DB collision; the clerk
+needs to see both to fix the batch in one pass).
 
 The convention generalises: any new invariant rewrap (M5 sync conflicts that
 surface to the user, new unique constraints, etc.) should produce a message
-that names the offending entity. The sync layer already does this via
+that names the offending entity, and exhaustively when one request can yield
+multiple violations. The sync layer already does the named-value half via
 `SyncUniqueConflictError(field, value)`, which carries the attempted value.
 
 ## Canonical P2002 (unique-violation) detection
