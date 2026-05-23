@@ -6,14 +6,17 @@ import { ProductsService } from './products.service';
 export class ProductsController {
   constructor(private readonly products: ProductsService) {}
 
-  // Gate: there is no dedicated product.read permission in the seed, and this
-  // endpoint exposes currentMarketPrice, so pricelist.read is the closest
-  // existing read permission. We use an existing key rather than invent one.
+  // Gate: product.read is the catalogue-read permission (variants, SKUs,
+  // attributes, status, and the selling-side currentMarketPrice which is
+  // visible to all per Invariant I-8). pricelist.read remains on the price-list
+  // endpoints proper. This split was added when the Procurement Officer role
+  // needed to fetch the catalogue to build PO lines but legitimately should not
+  // hold pricelist.read.
   //
   // @Audit on a READ is for the M1 proof-of-chain demonstration only. Reads are
   // not normally audited in production (only mutations are).
   @Get()
-  @RequirePermissions('pricelist.read')
+  @RequirePermissions('product.read')
   @Audit('product.read', 'Product')
   findAll() {
     return this.products.findAll();

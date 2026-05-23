@@ -68,7 +68,7 @@ plus (later) the web frontend.
 - `prisma/schema.prisma`: 50 models, 37 enums, validated and migrated.
 - Migrations applied, including partial unique indexes for invariants I-5, I-11,
   and the one-current-price-per-variant-tier rule.
-- `prisma/seed.ts`: idempotent. Seeded 48 permissions, 14 roles, 5 users, 2
+- `prisma/seed.ts`: idempotent. Seeded 49 permissions, 14 roles, 5 users, 2
   counterparties (TVS manufacturer, VSK supplier), 2 products + 5 variants from
   the real PI, 2 customer tiers, 10 price list entries, 2 payment methods, 1
   warehouse, 3 feature toggles.
@@ -454,6 +454,27 @@ return.manage holder also holds salesorder.read (verified in the seed), so the
 broader permission satisfies the OR. If a route ever needs true OR-of-permissions
 that no single permission's holder-set covers, that is a guard enhancement (an
 `@RequireAnyPermission` decorator), not something to fake through the AND guard.
+
+## product.read vs pricelist.read (catalogue/pricing split)
+
+`GET /api/products` is gated on `product.read` (the catalogue: variants, SKUs,
+attributes, status, and the selling-side `currentMarketPrice` which is treated
+as visible to all per Invariant I-8 and the existing reports/pricing
+conventions). The actual price-list endpoints under `/api/price-list` keep
+`pricelist.read` and `pricelist.manage`.
+
+This split was added during the frontend build when the Procurement Officer
+role could not fetch the product catalogue to build PO line items: the role
+needs to reference products but legitimately does not hold `pricelist.read`.
+The original `pricelist.read` gate on the catalogue was a modelling error
+(conflating "see what products exist" with "see the price list"). Every seeded
+role now holds `product.read` (each one has at least one product-touching
+permission across procurement, inventory, sales, assembly, or reporting). The
+catalogue is foundational; pricing is a narrower concern.
+
+If a future role legitimately should NOT see the catalogue, drop `product.read`
+from its grant list; the current default is "everyone with any product-touching
+permission can see what products exist."
 
 ## ts-node service-level checks need --files
 
