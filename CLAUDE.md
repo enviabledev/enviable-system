@@ -419,6 +419,31 @@ what has already been sold or written off. Each variant row exposes
 `inStockCount` so the figure is auditable. A "total sold value" is a different
 figure and lives in the revenue report (recognised at release), not here.
 
+## Invariant-violation messages name the offending entity
+
+When a unique-index or invariant violation is rewrapped to a 409, the message
+must name the offending entity (the engine number, the SKU, the SO number,
+whatever the natural identifier is for the colliding row). Generic messages
+like "a unit is already allocated to another active sales order line" force
+the client to detective which row collided; named messages let the client
+highlight the exact line, the same way the receipt flow has always done
+(`engineNumber already exists: RCV-GS-001`).
+
+This was added to the I-11 path after a frontend build surfaced that a generic
+message made the conflict panel unable to point at the offending PO line.
+Implementation pattern: a pre-flight lookup before the transaction names the
+unit in the typical case; the P2002 catch performs the same lookup as
+race-window enrichment, so a concurrent allocation that slips between the
+pre-flight and the insert still gets a named message. Both paths route through
+`formatI11Message` in `sales-orders.service.ts`. The I-11 partial unique index
+remains the authoritative enforcer; the pre-flight is a usability layer, not
+the safety layer.
+
+The convention generalises: any new invariant rewrap (M5 sync conflicts that
+surface to the user, new unique constraints, etc.) should produce a message
+that names the offending entity. The sync layer already does this via
+`SyncUniqueConflictError(field, value)`, which carries the attempted value.
+
 ## Canonical P2002 (unique-violation) detection
 
 `src/common/prisma-errors.ts` `isUniqueViolationOn(err, { index, fields })` is

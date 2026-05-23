@@ -59,6 +59,31 @@ function isSoLineUnitViolation(err: unknown): boolean {
   });
 }
 
+interface I11Conflict {
+  engineNumber: string;
+  soNumber: string;
+}
+
+/**
+ * Format the I-11 message naming the offending unit(s) and the order(s) they
+ * are already allocated to. Mirrors the receipt flow's named-serial pattern
+ * ("engineNumber already exists: ...") so error messages consistently name the
+ * offending entity. The empty-conflicts branch is a defensive fallback: P2002
+ * fired but the enrichment lookup found nothing (a tight race where the other
+ * allocation was freed between the violation and the lookup).
+ */
+function formatI11Message(conflicts: I11Conflict[]): string {
+  if (conflicts.length === 0) {
+    return 'Invariant I-11: a unit is already allocated to another active sales order line.';
+  }
+  if (conflicts.length === 1) {
+    const c = conflicts[0];
+    return `Invariant I-11: unit ${c.engineNumber} is already allocated to sales order ${c.soNumber}.`;
+  }
+  const list = conflicts.map((c) => `${c.engineNumber} (on ${c.soNumber})`).join(', ');
+  return `Invariant I-11: ${conflicts.length} units already allocated to other active sales order lines: ${list}.`;
+}
+
 interface ResolvedLine {
   productVariantId: string;
   unitId: string;
@@ -114,6 +139,17 @@ export class SalesOrdersService {
     );
     const lines = await this.resolveLines(dto.lines, tierId);
     const totals = this.computeTotals(lines);
+    const requestedUnitIds = lines.map((l) => l.unitId);
+
+    // Pre-flight: name the offending unit if any requested unit is already
+    // allocated. Mirrors the receipt flow's named-serial pattern. The I-11
+    // partial unique index remains the authoritative enforcer; this just
+    // surfaces a useful named error in the typical case (and avoids spending
+    // a transaction on a doomed insert).
+    const preFlight = await this.findI11Conflicts(requestedUnitIds);
+    if (preFlight.length > 0) {
+      throw new ConflictException(formatI11Message(preFlight));
+    }
 
     try {
       return await this.prisma.$transaction(async (tx) => {
@@ -136,9 +172,10 @@ export class SalesOrdersService {
       });
     } catch (err) {
       if (isSoLineUnitViolation(err)) {
-        throw new ConflictException(
-          'Invariant I-11: a unit is already allocated to another active sales order line.',
-        );
+        // Race-window enrichment: a concurrent allocation slipped between the
+        // pre-flight and the insert. Re-query to name the offending unit.
+        const racing = await this.findI11Conflicts(requestedUnitIds);
+        throw new ConflictException(formatI11Message(racing));
       }
       throw err;
     }
@@ -162,6 +199,15 @@ export class SalesOrdersService {
     );
     const lines = await this.resolveLines(linesDto, tierId);
     const totals = this.computeTotals(lines);
+    const requestedUnitIds = lines.map((l) => l.unitId);
+
+    // Pre-flight: name conflicts, excluding this order's existing lines (they
+    // are about to be deleted and recreated in the transaction, so they are
+    // not real conflicts).
+    const preFlight = await this.findI11Conflicts(requestedUnitIds, id);
+    if (preFlight.length > 0) {
+      throw new ConflictException(formatI11Message(preFlight));
+    }
 
     try {
       return await this.prisma.$transaction(async (tx) => {
@@ -187,12 +233,47 @@ export class SalesOrdersService {
       });
     } catch (err) {
       if (isSoLineUnitViolation(err)) {
-        throw new ConflictException(
-          'Invariant I-11: a unit is already allocated to another active sales order line.',
-        );
+        // Race-window enrichment: see comment in create().
+        const racing = await this.findI11Conflicts(requestedUnitIds, id);
+        throw new ConflictException(formatI11Message(racing));
       }
       throw err;
     }
+  }
+
+  /**
+   * Look up sales-order lines that already reference any of the requested
+   * units (excluding lines of the given sales order, if any), and return the
+   * offending units' engine numbers and the SO numbers they are allocated to.
+   * The I-11 partial unique index is `(unitId) WHERE unitId IS NOT NULL`, so
+   * a plain findMany on unitId catches every active allocation: cancelled
+   * orders have their lines' unitId nulled (see cancel()), released orders
+   * still hold the allocation forever (the unit is sold).
+   */
+  private async findI11Conflicts(
+    unitIds: string[],
+    excludeSalesOrderId?: string,
+  ): Promise<I11Conflict[]> {
+    const ids = [...new Set(unitIds.filter((u): u is string => Boolean(u)))];
+    if (ids.length === 0) return [];
+    const rows = await this.prisma.salesOrderLine.findMany({
+      where: {
+        unitId: { in: ids },
+        ...(excludeSalesOrderId
+          ? { salesOrderId: { not: excludeSalesOrderId } }
+          : {}),
+      },
+      select: {
+        unit: { select: { engineNumber: true } },
+        salesOrder: { select: { soNumber: true } },
+      },
+    });
+    return rows
+      .filter((r) => r.unit && r.salesOrder)
+      .map((r) => ({
+        engineNumber: r.unit!.engineNumber,
+        soNumber: r.salesOrder.soNumber,
+      }));
   }
 
   async submit(id: string) {
