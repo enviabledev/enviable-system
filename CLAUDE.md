@@ -373,11 +373,75 @@ was verified empirically on the windowed path: a Sales Officer's windowed
 pull returns units with no `landedCost` key, while a Procurement Officer's
 returns the cost intact.
 
-Scope filter `?scope=type1,type2,...` accepts any of the 22 mirrored entity
+Scope filter `?scope=type1,type2,...` accepts any of the 26 mirrored entity
 type names (see `ALL_TYPES` in `sync-pull.service.ts`). Omitted means all.
 When adding a new mirrored entity, update `ALL_TYPES` AND the `referenceDelta`
 return object (both the empty stub and the conditional fetch); the entity
-must already have a reliable `updatedAt` per the spine rule above.
+must either have a reliable `updatedAt` per the spine rule above, or be
+append-only and key on its insert-time field (occurredAt/issuedAt/etc.).
+
+### Buckets and their key fields
+
+Most buckets key on `updatedAt`. The exceptions are append-only event/auth
+streams that have no `updatedAt` by invariant; they key on their natural
+insert-time field:
+
+- `stockMovements` keys on `occurredAt` (I-9/I-10 immutable; insert-only).
+  Carries `unitId` so a unit-detail timeline reconstructs offline by
+  filtering movements to that unit.
+- `sparePartMovements` keys on `occurredAt`. Carries `sparePartId` for the
+  spare-part timeline.
+- `auditLogEntries` keys on `occurredAt`. Carries the full audit row
+  (action, entityType, entityId, beforeState, afterState, context). Can
+  grow large; the FRONTEND mirror should govern whether to include it
+  (typically only for users holding `audit.read`, optionally with a
+  narrower window than the 90-day default to bound size). Backend exposes
+  it; frontend decides.
+- `releaseAuthorisations` keys on `issuedAt`. Conceptually append-only
+  (one per released SO, never updated). Load-bearing for the revenue and
+  customers reports: revenue's window filter is `releaseAuthorisation.
+  issuedAt`, and customers uses presence of releaseAuthorisation as the
+  released-or-not gate for `totalOrderValue`. Without this bucket, both
+  reports would be wrong offline.
+
+### Cost-stripping on the append-only event streams
+
+None of the event-stream rows (`stockMovement`, `sparePartMovement`,
+`auditLogEntry`) carry cost fields directly, so the global
+`CostVisibilityInterceptor` has nothing to strip from them. Verified by key
+sweep: zero `cost|landed|cif|freight|insurance|margin` keys on any row of
+any of those buckets. Cost data lives only on `Unit.landedCost` and
+`SparePart.landedCostPerUnit` (plus the cost-component models), which are
+stripped from their own buckets per I-8 as before.
+
+## Report-input coverage (verified for offline recompute)
+
+The four MVP reports compute over the following entities; the mirror's
+coverage of each input determines whether the report can be recomputed
+offline as "complete but possibly stale" (freshness + accuracy warning is
+sufficient) or "structurally incomplete" (a stronger disclosure is needed,
+because the report would compute over MISSING data, not just stale data).
+
+| Report | Inputs | Mirror coverage |
+|---|---|---|
+| Stocks | `unit`, `productVariant`, `sparePart` | Complete |
+| Customers | `customer`, `salesOrder`, `payment` (CONFIRMED), `releaseAuthorisation` | Complete (releaseAuthorisation added to the pull for this) |
+| Revenue | `salesOrder` + lines, `customer`, `productVariant`, `unit` (for landedCost), `releaseAuthorisation` (window key) | Complete (releaseAuthorisation added to the pull for this) |
+| Audit log | `auditLogEntry` | Available (bucket exposed; frontend governs whether and how much to mirror per user / audit.read) |
+
+All four reports compute over entities now present in the mirror. The
+offline recompute is therefore "complete but possibly stale" for stocks,
+customers, and revenue: freshness + accuracy warning is the right
+disclosure level. For the audit log report, the frontend mirror's scope
+choice determines whether it's complete or windowed (if the frontend
+mirrors a narrower window than the report queries, the report would have
+a known horizon limit; disclose that horizon, don't silently compute over
+a partial set).
+
+The Unit detail screen's movement timeline reconstructs from
+`stockMovements` filtered to the unit's id; product labels reconstruct from
+`products` joined to `productVariants` on `productId`. Both verified
+end-to-end against the windowed pull.
 
 ## tsconfig + nest-cli build gotcha
 

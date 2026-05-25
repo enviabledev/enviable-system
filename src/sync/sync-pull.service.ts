@@ -9,6 +9,7 @@ import { SyncPullQueryDto } from './dto/sync-pull-query.dto';
 // for the paged collection).
 const ALL_TYPES = [
   // Reference data (small, full delta per window)
+  'product',
   'productVariant',
   'customerTier',
   'priceListEntry',
@@ -32,6 +33,13 @@ const ALL_TYPES = [
   'salesOrderLine',
   'invoice',
   'payment',
+  'releaseAuthorisation',
+  // Append-only movement/event streams (key on occurredAt or issuedAt, not
+  // updatedAt: these tables are insert-only per I-9/I-10 so the insert time IS
+  // their definitive mod-time).
+  'stockMovement',
+  'sparePartMovement',
+  'auditLogEntry',
   // Large collection, paged separately
   'unit',
 ] as const;
@@ -254,6 +262,7 @@ export class SyncPullService {
     paging: boolean,
   ) {
     const empty = {
+      products: [] as unknown[],
       productVariants: [] as unknown[],
       customerTiers: [] as unknown[],
       priceListEntries: [] as unknown[],
@@ -275,13 +284,32 @@ export class SyncPullService {
       salesOrderLines: [] as unknown[],
       invoices: [] as unknown[],
       payments: [] as unknown[],
+      releaseAuthorisations: [] as unknown[],
+      stockMovements: [] as unknown[],
+      sparePartMovements: [] as unknown[],
+      auditLogEntries: [] as unknown[],
     };
     if (paging) return empty;
 
-    const updatedIn = { updatedAt: dateBound(window) };
+    const bound = dateBound(window);
+    const updatedIn = { updatedAt: bound };
+    // Append-only streams (StockMovement, SparePartMovement, AuditLogEntry)
+    // key on `occurredAt`: per I-9/I-10 they are insert-only and have no
+    // updatedAt, so the insert moment IS the mod-time. ReleaseAuthorisation
+    // is conceptually append-only too (one per released SO, never updated);
+    // it keys on `issuedAt`.
+    const occurredIn = { occurredAt: bound };
+    const issuedIn = { issuedAt: bound };
 
     return {
       // Reference / lookup tables
+      // Product is the parent of ProductVariant; the mirror needs both so the
+      // frontend can resolve full product labels offline (variant.productId
+      // joined to product.{name, category, manufacturerId}). Small table at
+      // this business's scale.
+      products: inScope('product')
+        ? await this.prisma.product.findMany({ where: updatedIn })
+        : [],
       productVariants: inScope('productVariant')
         ? await this.prisma.productVariant.findMany({ where: updatedIn })
         : [],
@@ -355,6 +383,36 @@ export class SyncPullService {
         : [],
       payments: inScope('payment')
         ? await this.prisma.payment.findMany({ where: updatedIn })
+        : [],
+      // ReleaseAuthorisation gates the revenue and customers reports: revenue
+      // keys on issuedAt as the recognition window, customers uses presence
+      // of releaseAuthorisation as the released-or-not gate for
+      // totalOrderValue. Without it mirrored, both reports would be wrong
+      // offline. Append-only (one per released SO, never updated); key on
+      // issuedAt.
+      releaseAuthorisations: inScope('releaseAuthorisation')
+        ? await this.prisma.releaseAuthorisation.findMany({ where: issuedIn })
+        : [],
+
+      // Append-only event streams. unitId / sparePartId carried so the
+      // frontend can reconstruct per-entity timelines by filtering. Keyed on
+      // occurredAt (these tables have no updatedAt, per I-9/I-10). Cost
+      // stripping is irrelevant: none of these rows carry cost fields (the
+      // cost data lives on Unit.landedCost and SparePart.landedCostPerUnit,
+      // which are themselves stripped by the global interceptor).
+      stockMovements: inScope('stockMovement')
+        ? await this.prisma.stockMovement.findMany({ where: occurredIn })
+        : [],
+      sparePartMovements: inScope('sparePartMovement')
+        ? await this.prisma.sparePartMovement.findMany({ where: occurredIn })
+        : [],
+      // AuditLogEntry can grow unboundedly. The bucket is available; the
+      // frontend mirror should govern whether to include it (typically only
+      // for users holding audit.read, optionally with a narrower window than
+      // the 90-day mirror to bound size). Not in scope by default would be a
+      // policy choice for the frontend; the backend pull just exposes it.
+      auditLogEntries: inScope('auditLogEntry')
+        ? await this.prisma.auditLogEntry.findMany({ where: occurredIn })
         : [],
     };
   }
