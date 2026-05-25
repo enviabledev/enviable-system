@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+} from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { Principal } from '../auth/auth.service';
@@ -19,9 +23,28 @@ import { SyncIdempotencyService } from './sync-idempotency.service';
 
 const DISCOUNT_PERMISSION = 'salesorder.discount';
 
+/**
+ * A single entry of an exhaustive constraint-violations response (the structured
+ * 409 shape established for the receipt flow in prompt 5.5 and documented as the
+ * universal named-violation convention). Each carries a per-surface `kind`
+ * (e.g. receipt's IN_BATCH_DUP / AGAINST_DB), the constraint `field`, the
+ * offending `value`, and a legacy single-line `message` for back-compat
+ * extractors. Surface-specific positional data (e.g. receipt's `rows`) passes
+ * through via the index signature: the sync intake only needs to forward the
+ * array, not interpret its surface details.
+ */
+export interface StructuredViolation {
+  kind: string;
+  field: string;
+  value: unknown;
+  message: string;
+  [extra: string]: unknown;
+}
+
 export type SyncConflict =
   | { kind: 'unique'; field: string; value: unknown }
-  | { kind: 'field-review'; reviews: ReviewRef[] };
+  | { kind: 'field-review'; reviews: ReviewRef[] }
+  | { kind: 'constraint-violations'; violations: StructuredViolation[] };
 
 export interface ActionResult {
   clientId: string;
@@ -100,16 +123,53 @@ export class SyncActionsService {
     return { results };
   }
 
-  // Mechanism 2: a unique-constraint violation surfaced through sync becomes a
-  // structured conflict (offending field and value), never a crashed batch or a
-  // 500. A SyncUniqueConflictError carries field/value directly; a raw P2002 is
-  // matched defensively via the canonical isUniqueViolationOn helper.
+  // A failure of a wrapped action becomes one of three outcomes:
+  //   - 'conflict' with structured detail the client can render or queue for
+  //     resolution (kind: 'unique' for a single field/value collision, kind:
+  //     'constraint-violations' for the exhaustive structured 409 the named-
+  //     violation convention produces, kind: 'field-review' produced elsewhere
+  //     for field-merge reviews);
+  //   - 'error' for everything else (genuine errors the clerk cannot resolve
+  //     by editing inputs, e.g. wrong-state shipment, malformed payload,
+  //     transient server failure).
+  //
+  // The named-violation convention (prompt 5.5 / I-11) is universal across
+  // paths: any ConflictException whose response body carries a structured
+  // `violations` array is the exhaustive constraint-violations shape and is
+  // forwarded intact as a 'conflict' outcome so the offline path surfaces the
+  // same clerk-resolvable detail as the direct-POST endpoints. ONLY a
+  // ConflictException carrying that body reclassifies; string-message
+  // ConflictExceptions (wrong-state, in-batch-dup-of-references in assembly,
+  // the I-11 string message today) stay in 'error' so the conflicts surface
+  // never receives an action the clerk cannot fix. If/when SO or assembly
+  // migrate to the structured-violations body, they will be picked up here
+  // automatically by the same matcher.
+  //
+  // Safe-by-retry is unchanged: idempotency only records the action on a
+  // successful work() return, so a 'conflict' or 'error' outcome leaves
+  // nothing recorded and a same-clientId re-submission of a corrected action
+  // re-runs cleanly.
   private classifyError(err: unknown): DispatchResult {
     if (err instanceof SyncUniqueConflictError) {
       return {
         status: 'conflict',
         conflict: { kind: 'unique', field: err.field, value: err.value },
       };
+    }
+    if (err instanceof ConflictException) {
+      const body = err.getResponse();
+      if (
+        typeof body === 'object' &&
+        body !== null &&
+        Array.isArray((body as { violations?: unknown }).violations)
+      ) {
+        const violations = (body as { violations: StructuredViolation[] })
+          .violations;
+        return {
+          status: 'conflict',
+          conflict: { kind: 'constraint-violations', violations },
+        };
+      }
     }
     const field = detectUniqueField(err);
     if (field) {

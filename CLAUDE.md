@@ -470,11 +470,35 @@ A value that is BOTH an in-batch dup and against-DB produces both violations
 (deduplicating within the batch still leaves the DB collision; the clerk
 needs to see both to fix the batch in one pass).
 
-The convention generalises: any new invariant rewrap (M5 sync conflicts that
-surface to the user, new unique constraints, etc.) should produce a message
-that names the offending entity, and exhaustively when one request can yield
-multiple violations. The sync layer already does the named-value half via
-`SyncUniqueConflictError(field, value)`, which carries the attempted value.
+**The convention is universal across paths, including the sync intake.** A
+structured-violations 409 must surface identically whether the action arrived
+via a direct POST or via `POST /api/sync/actions`. The sync dispatcher's
+`classifyError` (`src/sync/sync-actions.service.ts`) recognises any
+`ConflictException` whose response body carries a `violations` array and
+forwards it as `{status: 'conflict', conflict: {kind: 'constraint-violations',
+violations: [...]}}`, preserving the structured detail intact rather than
+collapsing it to `{status: 'error', error: <message>}`. Genuine errors that
+don't carry violations (string-message ConflictExceptions for wrong-state /
+malformed-payload / transient failures, validation errors, etc.) stay as
+`'error'` so the clerk-resolvable conflicts surface never receives an action
+the clerk cannot fix by editing inputs.
+
+The bar for "what reclassifies as `conflict`" is the violations-body shape,
+not the exception class: a string-message ConflictException (assembly's
+wrong-state check, the I-11 message today which is still a single-line
+string from `formatI11Message`) stays in `error` because it has no structured
+detail for the conflicts surface to render. If/when those flows migrate to
+the structured-violations body (in keeping with this universal convention),
+they get picked up by the same matcher automatically. Adding a new endpoint
+or sync action type? Throw the structured shape from the start; no further
+sync-intake change needed.
+
+Safe-by-retry is preserved through this: a `'conflict'` outcome (like an
+`'error'`) is NOT recorded by `SyncIdempotencyService.process` (which only
+records on a successful work() return), so a same-clientId re-submission of
+a corrected action re-runs cleanly. This is the load-bearing guarantee that
+lets the conflicts surface be a fix-then-resubmit workflow rather than a
+record-and-dead-end.
 
 ## Canonical P2002 (unique-violation) detection
 
