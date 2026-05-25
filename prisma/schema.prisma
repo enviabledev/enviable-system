@@ -463,11 +463,14 @@ model PurchaseOrder {
 }
 
 model PurchaseOrderLine {
-  id               String  @id @default(cuid())
+  id               String   @id @default(cuid())
   purchaseOrderId  String
   productVariantId String
   quantityOrdered  Int
-  unitPrice        Decimal @db.Decimal(18, 2)
+  unitPrice        Decimal  @db.Decimal(18, 2)
+  // updatedAt on a line so the offline mirror can sync line changes
+  // independently of whether the parent PO row was updated in the same write.
+  updatedAt        DateTime @updatedAt
 
   purchaseOrder  PurchaseOrder  @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
@@ -509,12 +512,15 @@ model ProformaInvoice {
 }
 
 model ProformaInvoiceLine {
-  id                String  @id @default(cuid())
+  id                String   @id @default(cuid())
   proformaInvoiceId String
   productVariantId  String
   quantity          Int
-  unitPrice         Decimal @db.Decimal(18, 2)
-  lineTotal         Decimal @db.Decimal(18, 2)
+  unitPrice         Decimal  @db.Decimal(18, 2)
+  lineTotal         Decimal  @db.Decimal(18, 2)
+  // updatedAt on a line so the offline mirror can sync line changes
+  // independently of the parent PI row's updatedAt.
+  updatedAt         DateTime @updatedAt
 
   proformaInvoice ProformaInvoice @relation(fields: [proformaInvoiceId], references: [id], onDelete: Cascade)
   productVariant  ProductVariant  @relation(fields: [productVariantId], references: [id])
@@ -591,6 +597,12 @@ model ManifestLine {
   variance           Int       @default(0)
   varianceReason     String?
   varianceResolvedAt DateTime?
+  // updatedAt on a line so the offline mirror can sync line changes
+  // independently of the parent Shipment's updatedAt. Critical: receiveUnits
+  // updates ManifestLine.quantityReceived without bumping the parent Shipment,
+  // so without this column a shipment receive would be invisible to a mirror
+  // querying Shipment.updatedAt alone.
+  updatedAt          DateTime  @updatedAt
 
   shipment       Shipment       @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
@@ -871,6 +883,11 @@ model PriceListEntry {
   effectiveFrom    DateTime  @default(now())
   effectiveTo      DateTime?
   setById          String?
+  // updatedAt for offline-mirror uniformity. effectiveFrom/effectiveTo
+  // remain the SEMANTIC mod-time for prices (a price change creates a row
+  // and supersedes another); updatedAt is the spine-consistent key for the
+  // mirror so every mirrored entity is queryable by the same field.
+  updatedAt        DateTime  @updatedAt
 
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
   customerTier   CustomerTier   @relation(fields: [customerTierId], references: [id])
@@ -927,6 +944,9 @@ model SalesOrderLine {
   unitPrice        Decimal  @db.Decimal(18, 2)
   discountAmount   Decimal  @default(0) @db.Decimal(18, 2)
   lineTotal        Decimal  @db.Decimal(18, 2)
+  // updatedAt on a line so the offline mirror can sync line changes
+  // independently of the parent SO's updatedAt.
+  updatedAt        DateTime @updatedAt
 
   salesOrder     SalesOrder     @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
@@ -948,6 +968,11 @@ model Invoice {
   total         Decimal  @db.Decimal(18, 2)
   pdfDocumentId String?
   createdAt     DateTime @default(now())
+  // updatedAt for offline-mirror keying. Invoice rows are largely immutable
+  // (the invoice snapshots the SO total at issue and does not recompute),
+  // but pdfDocumentId may be set later when the PDF is generated; bumping
+  // updatedAt makes that change surface to the mirror.
+  updatedAt     DateTime @updatedAt
 
   salesOrder  SalesOrder @relation(fields: [salesOrderId], references: [id])
   pdfDocument Document?  @relation(fields: [pdfDocumentId], references: [id])
@@ -963,6 +988,11 @@ model PaymentMethod {
   webhookEndpoint String?
   status          CounterpartyStatus @default(ACTIVE)
   createdAt       DateTime           @default(now())
+  // updatedAt for offline-mirror keying. PaymentMethod is largely static
+  // (the seed has 2 entries); the realistic mutation is an admin toggling
+  // status (e.g. activating POS Terminal later), which now surfaces to the
+  // mirror via updatedAt rather than being invisible.
+  updatedAt       DateTime           @updatedAt
 
   payments Payment[]
 
@@ -982,6 +1012,10 @@ model Payment {
   status             PaymentStatus             @default(PENDING)
   clientId           String?                   @unique
   createdAt          DateTime                  @default(now())
+  // updatedAt for offline-mirror keying. Payments move through PENDING ->
+  // CONFIRMED on confirm, and may attach a receiptDocumentId post-creation;
+  // both are mutations the mirror must surface.
+  updatedAt          DateTime                  @updatedAt
 
   salesOrder      SalesOrder      @relation(fields: [salesOrderId], references: [id])
   paymentMethod   PaymentMethod   @relation(fields: [paymentMethodId], references: [id])

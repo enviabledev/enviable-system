@@ -286,6 +286,49 @@ in `schema.prisma` so future migrations can find it.
 adding a new transactional model, decide whether it needs a `clientId @unique`
 for sync idempotency.
 
+## `updatedAt` is the offline-mirror spine: must advance on every mutation
+
+The offline read-mirror keys every entity on `updatedAt`: window queries bound
+by it, delta sync continues from it, and offline-read freshness is disclosed
+from it. So `updatedAt` is load-bearing: a mutation that doesn't advance the
+row's `updatedAt` is silently invisible to the mirror, the worst failure mode
+(no error, the clerk reads stale data believing it current).
+
+**The rule:** every mirrored entity has `updatedAt @updatedAt` and every
+mutation path advances it. Prisma's `@updatedAt` does this automatically for
+`prisma.<model>.update(...)` / `updateMany`; if you ever write a path that
+mutates rows OUTSIDE Prisma's update operation (raw SQL `UPDATE`, an
+`executeRaw`/`queryRaw` that modifies, a DB trigger that mutates) you MUST
+explicitly bump `updatedAt` on that path. As of M5 every raw-SQL site in
+`src/` is read-only (SELECT or `pg_advisory_xact_lock`); migrations are DDL
+or block-only triggers (no raw UPDATE on mirrored entities). So in this
+codebase the rule reduces to "make sure the column exists and writes go
+through Prisma." If a future path bypasses Prisma for performance or any
+other reason, the bumping is the caller's responsibility, not the ORM's.
+
+**Child entities (lines) need their own `updatedAt`.** Parents do not
+necessarily bump on child changes (verified case: `receiveUnits` updates
+`ManifestLine.quantityReceived` without touching `Shipment`). The mirror
+queries child tables directly on their own `updatedAt`, sidestepping the
+parent-bumps-on-child question entirely. PurchaseOrderLine,
+ProformaInvoiceLine, ManifestLine, and SalesOrderLine all carry
+`updatedAt @updatedAt` for exactly this reason; back-filled from their
+parent's createdAt at migration time (the closest semantic for "modified at
+or after this moment").
+
+**Append-only tables use createdAt as effective modified-time.**
+`AuditLogEntry`, `StockMovement`, `PeriodSnapshot`, `StockValuationLine`,
+and `SparePartMovement` are insert-only by invariant (I-9/I-10); they have
+no UPDATE path, so their `createdAt` IS their definitive mod-time. The
+mirror queries these by `createdAt > since`; no `updatedAt` is required or
+meaningful.
+
+**Decided cases that were M5 fallbacks:** PriceListEntry and PaymentMethod
+both received real `updatedAt` columns (backfilled from `effectiveFrom` and
+`createdAt` respectively) for spine uniformity, so every mirrored entity is
+queryable by the same field. `effectiveFrom`/`effectiveTo` remain the
+semantic mod-time for prices; `updatedAt` is the consistent key.
+
 ## tsconfig + nest-cli build gotcha
 
 `nest-cli.json` has `deleteOutDir: true`. If you re-add `incremental: true` to
