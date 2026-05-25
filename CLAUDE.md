@@ -329,6 +329,56 @@ both received real `updatedAt` columns (backfilled from `effectiveFrom` and
 queryable by the same field. `effectiveFrom`/`effectiveTo` remain the
 semantic mod-time for prices; `updatedAt` is the consistent key.
 
+## Sync pull: since-mode and windowed-mode
+
+`GET /api/sync/pull` (`SyncPullService.pull`) serves two modes off the same
+endpoint:
+
+- **since-mode** (default): `?since=<iso>` returns everything with
+  `updatedAt > since` and `<= serverNow`. Used by the ongoing reconciling
+  delta sync (a device that has been online recently catches up from where it
+  left off to the present). Omitting `since` means epoch (first-ever sync).
+- **windowed-mode**: `?from=<iso>&to=<iso>` returns everything with
+  `updatedAt` in `[from, to)`. Used by the offline read-mirror's initial
+  90-day download in 7-day windows. Half-open at `to` so adjacent windows
+  don't double-count rows on the boundary. Providing only one of `from`/`to`
+  is a 400.
+
+Response shape is the same for both modes (so the client uses one parser):
+`{ mode, window: {from, to}, since, serverTime, nextSince, truncated, cursor,
+referenceData: { ... 20 entity buckets ... }, units: [...] }`. The `mode`
+field tells the client which mode the server ran; `window.from`/`window.to`
+are the authoritative bounds in either mode (in since-mode, `from = since`
+and `to = serverTime`).
+
+Reference data and transactional entities are returned in full per window
+(small at this business's scale for 7-day windows: a typical 7-day window
+of shipments/POs/PIs/SOs/payments is on the order of tens to low hundreds
+of rows). Units are the large set, paged by `limit` (default 500, max
+1000) with a keyset continuation cursor; the client re-pulls with the same
+window plus the cursor until `truncated: false`, then adopts `nextSince`.
+On continuation pages reference data is the empty stub (not re-fetched).
+
+`nextSince` is anchored to `window.from` while truncated (so the client
+re-pulls the same window); once the page is complete, it advances to
+`serverTime` (since-mode) or `window.to` (windowed-mode) so the client
+can hand it back as the next call's `since` or use it to compute the next
+window.
+
+Cost-stripping (I-8) holds on both modes automatically: the global
+`CostVisibilityInterceptor` strips `landedCost` from any unit (or
+landed-cost row) in the response when the caller lacks `costdata.view`.
+The service returns full rows; the interceptor sanitises per-caller. This
+was verified empirically on the windowed path: a Sales Officer's windowed
+pull returns units with no `landedCost` key, while a Procurement Officer's
+returns the cost intact.
+
+Scope filter `?scope=type1,type2,...` accepts any of the 22 mirrored entity
+type names (see `ALL_TYPES` in `sync-pull.service.ts`). Omitted means all.
+When adding a new mirrored entity, update `ALL_TYPES` AND the `referenceDelta`
+return object (both the empty stub and the conditional fetch); the entity
+must already have a reliable `updatedAt` per the spine rule above.
+
 ## tsconfig + nest-cli build gotcha
 
 `nest-cli.json` has `deleteOutDir: true`. If you re-add `incremental: true` to
