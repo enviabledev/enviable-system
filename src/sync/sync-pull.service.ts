@@ -18,6 +18,8 @@ const ALL_TYPES = [
   'warehouse',
   'customer',
   'sparePart',
+  // User directory (minimal: id + fullName, for offline staff attribution)
+  'user',
   // Procurement
   'purchaseOrder',
   'purchaseOrderLine',
@@ -273,6 +275,7 @@ export class SyncPullService {
       warehouses: [] as unknown[],
       customers: [] as unknown[],
       spareParts: [] as unknown[],
+      users: [] as unknown[],
       purchaseOrders: [] as unknown[],
       purchaseOrderLines: [] as unknown[],
       lettersOfCredit: [] as unknown[],
@@ -343,6 +346,26 @@ export class SyncPullService {
         : [],
       spareParts: inScope('sparePart')
         ? await this.prisma.sparePart.findMany({ where: updatedIn })
+        : [],
+
+      // User directory: minimal non-sensitive display attribution only, so
+      // offline reads can resolve "performed by <name>" on every user-attributed
+      // field (audit actorId, approvedById, assembledById, cancelledById,
+      // movement actorId, etc.). The explicit `select` is load-bearing: it
+      // EXCLUDES passwordHash, email, phone, status, role/permission links, and
+      // every auth-adjacent column. NEVER widen this to a bare findMany (that
+      // would leak the password hash into the mirror). Standard updatedAt-keyed
+      // windowed delta. Soft-deleted users are intentionally included (a
+      // deactivated staffer who performed past actions must still resolve by
+      // name). Role labels are NOT mirrored: User-Role is many-to-many via
+      // UserRole (no single roleId), so resolving role names offline would need
+      // users + userRoles + roles joined client-side (a frontend change), and
+      // role is not part of name attribution anyway.
+      users: inScope('user')
+        ? await this.prisma.user.findMany({
+            where: updatedIn,
+            select: { id: true, fullName: true, updatedAt: true },
+          })
         : [],
 
       // Procurement chain
