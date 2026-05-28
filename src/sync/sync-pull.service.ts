@@ -34,6 +34,8 @@ const ALL_TYPES = [
   'invoice',
   'payment',
   'releaseAuthorisation',
+  // Assembly (workflow; standard updatedAt-windowed delta)
+  'assemblyJob',
   // Append-only movement/event streams (key on occurredAt or issuedAt, not
   // updatedAt: these tables are insert-only per I-9/I-10 so the insert time IS
   // their definitive mod-time).
@@ -285,6 +287,7 @@ export class SyncPullService {
       invoices: [] as unknown[],
       payments: [] as unknown[],
       releaseAuthorisations: [] as unknown[],
+      assemblyJobs: [] as unknown[],
       stockMovements: [] as unknown[],
       sparePartMovements: [] as unknown[],
       auditLogEntries: [] as unknown[],
@@ -392,6 +395,15 @@ export class SyncPullService {
       // issuedAt.
       releaseAuthorisations: inScope('releaseAuthorisation')
         ? await this.prisma.releaseAuthorisation.findMany({ where: issuedIn })
+        : [],
+
+      // Assembly jobs. Standard updatedAt-windowed delta (the model has
+      // updatedAt @updatedAt). No cost fields, so no CostVisibilityInterceptor
+      // concern; flat rows only (the frontend reconstructs unit from the unit
+      // bucket and variant from productVariant). supervisor (a User) is not
+      // mirrored, so supervisor name is unavailable offline by design.
+      assemblyJobs: inScope('assemblyJob')
+        ? await this.prisma.assemblyJob.findMany({ where: updatedIn })
         : [],
 
       // Append-only event streams. unitId / sparePartId carried so the
