@@ -35,3 +35,9 @@ export class AssemblyCompletePayloadDto {
   @IsNotEmpty()
   jobId!: string;
 }
+
+export class AssemblyFailPayloadDto {
+  @IsString()
+  @IsNotEmpty()
+  jobId!: string;
+}

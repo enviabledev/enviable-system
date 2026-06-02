@@ -17,6 +17,7 @@ export enum SyncActionType {
   UNIT_RECEIPT = 'unit.receipt',
   ASSEMBLY_START = 'assembly.start',
   ASSEMBLY_COMPLETE = 'assembly.complete',
+  ASSEMBLY_FAIL = 'assembly.fail',
   SALES_ORDER_CREATE = 'salesorder.create',
   ENTITY_UPDATE = 'entity.update',
 }

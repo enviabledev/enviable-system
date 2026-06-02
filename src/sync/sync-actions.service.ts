@@ -13,6 +13,7 @@ import { ShipmentsService } from '../shipments/shipments.service';
 import { SyncActionDto, SyncActionType, SyncBatchDto } from './dto/sync-batch.dto';
 import {
   AssemblyCompletePayloadDto,
+  AssemblyFailPayloadDto,
   AssemblyStartPayloadDto,
   UnitReceiptPayloadDto,
 } from './dto/sync-payloads.dto';
@@ -224,6 +225,22 @@ export class SyncActionsService {
           type,
           principal.id,
           () => this.assembly.complete(dto.jobId, principal.id),
+          (job) => job.id,
+        );
+        return { status: outcome.status, resultRef: outcome.resultRef };
+      }
+      case SyncActionType.ASSEMBLY_FAIL: {
+        // Mirrors ASSEMBLY_COMPLETE: same shape, calls assembly.fail. Wrong-state
+        // errors (job not IN_PROGRESS, unit not IN_ASSEMBLY) and not-found errors
+        // are string-message ConflictException / NotFoundException with no
+        // `violations` body, so classifyError keeps them as status:'error' (NOT
+        // reclassified as 'conflict'). Verified by probe.
+        const dto = await asDto(AssemblyFailPayloadDto, payload);
+        const outcome = await this.idempotency.process(
+          clientId,
+          type,
+          principal.id,
+          () => this.assembly.fail(dto.jobId, principal.id),
           (job) => job.id,
         );
         return { status: outcome.status, resultRef: outcome.resultRef };
