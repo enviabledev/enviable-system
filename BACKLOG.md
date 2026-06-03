@@ -11,55 +11,118 @@ implementation that don't belong in CLAUDE.md.
 ### Audit beforeState: handlers with non-`:id` URL params capture null
 
 The `AuditInterceptor.captureBeforeState` heuristic reads `req.params.id` to
-look up the pre-mutation row. Three @Audit-annotated handlers use a different
-param name and therefore yield null beforeState even though the entity exists
-pre-handler:
+look up the pre-mutation row. Three @Audit-annotated handlers don't fit that
+shape and therefore yield null beforeState. Per-handler confirmed shape (read
+the service methods directly to verify; do not infer from the @Audit string):
 
+- `POST /historical-load/shipment` (`historical.shipment`, no id param,
+  entityType `Shipment`): `createHistoricalShipment` creates a PO + PI +
+  Shipment in one `$transaction`. **Pure bulk-create.** Null beforeState is
+  semantically correct (no prior state existed for any of the three rows).
 - `POST /historical-load/units/:shipmentId` (`historical.units`, entityType
-  `Shipment`).
-- `POST /historical-load/shipment` (`historical.shipment`, no id param).
-- `POST /historical-load/spare-parts` (`historical.spareparts`, no id param).
+  `Shipment`): `loadUnits` creates many `Unit` rows and their RECEIPT
+  `StockMovement` rows in batched transactions. The Shipment itself is NOT
+  mutated (it was already `RECEIVED` from `createHistoricalShipment`); the
+  `:shipmentId` is a parent FK for the new Units, not a mutation target.
+  **Pure bulk-create.** Null beforeState is semantically correct.
+- `POST /historical-load/spare-parts` (`historical.spareparts`, no id param,
+  entityType `SparePart`): `loadSpareParts` uses `upsert` with
+  `quantityOnHand: { increment: r.quantity }`, i.e. **bulk-upsert, NOT pure
+  bulk-create**. For existing SpareParts the handler mutates state
+  (quantityOnHand incremented, name overwritten). Per-entity auditability is
+  preserved through the `SparePartMovement` stream (one row per CSV line, each
+  in the same transaction as the upsert), so the audit chain isn't broken; the
+  @Audit row itself is a SUMMARY event (`{dryRun, created: <n>}`), not a
+  per-entity snapshot. Null beforeState is structurally consistent with "no
+  single entity is the pre-state for this summary event," but the design here
+  is "summary-event audit + per-entity movement records," not "single-entity
+  audit." Worth flagging if a future requirement is "the audit row must let
+  you reconstruct each affected SparePart's pre-state without consulting the
+  movement stream": that would need either splitting the action into per-row
+  audited operations, or capturing a per-row pre-state array into the audit
+  context.
 
-For the historical bulk-load flows these are effectively create-many operations
-(loading manifests / spare-parts into a target shipment), so null beforeState is
-defensible as the "no prior state in the audited subject" reading. But the
-historical.units row would arguably benefit from capturing the parent Shipment's
-pre-load state. Two clean paths if precise per-shipment beforeState is later
-wanted:
+For shipment and units the framing is settled (null is correct). For spareparts
+the framing is settled IF the "summary audit + per-entity movement stream"
+design is intentional, which it appears to be (matches I-3 and the
+SparePartMovement table's purpose). Recommended: leave as-is. If precise
+per-entity reconstruction from the @Audit row is later required, plan a
+separate prompt for the summary-vs-per-entity audit-shape decision.
+
+Two clean paths if precise per-shipment beforeState is ever wanted for
+historical.units specifically (e.g. to capture the Shipment's status and
+metadata at load time):
 
 1. Rename the URL param from `:shipmentId` to `:id` (the convention every other
    audited handler follows). Trivial in the controller, zero call-site change
    externally beyond the URL.
 2. Extend the `@Audit(action, entityType)` decorator with an optional third
    field naming the param to use (e.g. `@Audit('historical.units', 'Shipment',
-   { paramKey: 'shipmentId' })`). Keeps URL conventions but adds API surface to
-   the decorator.
+   { paramKey: 'shipmentId' })`). Keeps URL conventions but adds API surface
+   to the decorator.
 
-Recommended: (1). Defer until someone needs offline-recoverable pre-load state
-for historical loads.
+Recommended: (1). Defer until there is a concrete need.
 
-### Audit write is fire-and-forget, NOT transactional with the handler
+### Audit writes are non-transactional with mutations: silent-loss risk
 
 The interceptor's `record()` is invoked via `void this.record(...)` inside a
-`tap` on the response observable. This means:
+`tap` on the response observable, so audit writes are fire-and-forget AFTER
+the handler completes and the response has been emitted. They are not part of
+the handler's transaction.
 
-- The audit write runs AFTER the handler has completed and the response has
-  been emitted. It is not part of the handler's transaction.
-- A handler throw means `tap(next)` never fires, so no audit row is written
-  (verified by Probe 4 of the beforeState rollout).
-- An `audit.write` failure logs to the Logger but does not affect the
-  already-emitted response.
+**The specific risk this opens.** A mutation can succeed (the database has
+committed the change) and the subsequent audit write can fail (DB hiccup,
+connection drop, the audit insert hits a transient error, the process dies
+between handler return and `tap` firing). In all those cases, the mutation is
+permanent and the audit row is silently missing. For an audit log that is the
+system's inspection-of-truth mechanism (compliance, investigation, "what
+changed and who did it"), this is the worse class of failure: the system is
+incomplete and the user has no way to detect it. The complementary risk
+(audit row for a mutation that didn't commit) does NOT occur, because a handler
+throw never emits `next`, so `tap` never fires, so `record()` is never called
+(verified by Probe 4 of the beforeState rollout).
 
-This is the established design and matches the invariant ("audit is the system
-of record"), but it does mean an audit row's existence is not strictly atomic
-with the mutation: a handler that successfully mutates but then dies before
-`tap` can fire (e.g. the process is killed between handler return and the
-audit insert) would leave the mutation committed without an audit row.
-Likelihood is extremely low in practice; raising the bar would require either
-wrapping the audit in the handler's transaction (requires plumbing the audit
-through every audited service) or queueing audit writes via an outbox pattern.
+**Likelihood:** low in steady state (the audit insert is a single-row write
+against a healthy DB and runs ~ms after the handler), but not zero, and the
+gap is undetectable from the system's own records, which is the defining
+property of a "silent loss" failure mode.
 
-Not actionable now; surfaced so it isn't rediscovered as a "bug" later.
+**Mitigation options** (in roughly increasing engineering cost):
+
+1. **Accept the gap with monitoring.** Add a Logger.error counter on the
+   existing `record()` catch block, surface it through whatever metrics path
+   M5 lands (structured logs / Prometheus / Sentry). Operators see audit-write
+   failures as they happen and can investigate. Doesn't close the gap, but
+   makes it observable. Low effort, modest assurance.
+2. **Retry-with-dedupe on audit-write failure.** When `audit.write` throws,
+   queue a retry (in-memory ring or persistent retry table) keyed on a
+   client-supplied idempotency token; the audit row's natural dedupe key is
+   (actorUserId, action, entityId, timestamp-bucket). Closes the gap for
+   transient DB failures; doesn't help if the process dies between mutation
+   commit and the queue write. Medium effort.
+3. **Transactional outbox pattern.** Each audited mutation, in its own
+   transaction, writes an `audit_outbox` row alongside the mutation; a
+   separate dispatcher polls the outbox and writes the real
+   `audit_log_entries` row, marking the outbox row dispatched. The mutation
+   and the outbox row commit together, so there is no window where a
+   committed mutation lacks an outbox record. Closes the gap fully, including
+   process-death scenarios. High effort: requires plumbing the audit write
+   through the handler's transaction (touching every audited service), or
+   moving the outbox-row write into the global interceptor with a Prisma
+   transaction reference threaded through `req` (uglier but contained).
+
+**Current call:** accept the gap (mitigation 1 implicitly: the existing
+`Logger.error` already fires on audit-write failure). Revisit when the
+compliance/auditability bar tightens or when the M5 observability work lands
+(which is the natural place to wire mitigation 1 explicitly). The Logger
+output should be the trigger for a real decision: if audit-write failures are
+non-zero in production, the silent-loss risk is concrete and mitigation 2 or 3
+becomes the next move.
+
+Not a blocker for shipping the beforeState fix, but the auditability principle
+this codebase rests on does not actually guarantee "every mutation has an
+audit row" today. It guarantees "if there is an audit row, it accurately
+describes a mutation." The reverse implication is the gap above.
 
 ### Existing 222 fixture audit entries have null beforeState (historical)
 
