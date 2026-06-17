@@ -8,6 +8,63 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
+### Invoice / proforma documents: fields not stored on the records (Prompt 28)
+
+The invoice + proforma PDF renderer (`src/documents/`) needs several
+customer-facing fields that no transactional record currently stores. Each is
+handled today by config, derivation, or an honest "Not provided" placeholder so
+the document is complete and never fabricates a datum. Decide per field whether
+to promote it to stored data before the documents are issued to real customers.
+
+- **Company identity + bank details**: not stored anywhere (no company-profile
+  table). Sourced from `loadCompanyProfile` config with design defaults
+  (`INVOICE_COMPANY_*`, `INVOICE_BANK_*`). A single-tenant constant for now;
+  promote to a DB-backed company profile if it ever needs editing in-app or
+  multi-entity support. Templates read it through one context object, so the DB
+  swap is additive (no template change).
+- **Ship-to / delivery address**: `Customer` has a single `address` JSON and no
+  separate delivery address. The sales invoice renders Ship To = Bill To. Add a
+  delivery address to `Customer` or `SalesOrder` if dealers ship to a different
+  yard than the billing address (the design shows them as distinct).
+- **Customer code, Customer PO**: not stored. Rendered as a muted "Not
+  provided". Add `customerCode` to `Customer` and `customerPO`/`reference` to
+  `SalesOrder` if these need to appear on issued invoices.
+- **Payment terms (sales side) + due date**: no terms column on `Customer` or
+  `SalesOrder` (only on `PurchaseOrder`/`ProformaInvoice`). The invoice derives
+  the due date as `issueDate + INVOICE_DEFAULT_NET_DAYS` (default 14) and labels
+  it "Net N Days" as a company-wide default. Capture per-order terms if they
+  vary by customer.
+- **UOM**: no unit-of-measure on `Product`/`ProductVariant`. Lines render a
+  constant `UNIT` (sales are serialised kekes, always one per unit). Add UOM if
+  spare parts ever sell (different units: PCS/SET) or kekes need "EA".
+- **Sales invoice currency**: `Invoice` has no currency column (sales are NGN by
+  domain). Rendered as NGN via `INVOICE_SALES_CURRENCY`. Add a currency column
+  if non-Naira sales become possible. (Proforma currency comes correctly from
+  `PurchaseOrder.currency`.)
+- **Line quantity on the sales invoice**: one `SalesOrderLine` is one `Unit`
+  (no qty column). The renderer aggregates identical units (same variant + unit
+  price) into one priced line with a count, to present customer-facing
+  quantities. This is a presentation choice; the stored model stays one-line-
+  per-unit. Revisit if per-unit serials (engine/chassis) should appear on the
+  invoice instead of an aggregated count.
+
+Renderer notes (not issues, recorded so they are deliberate):
+
+- **Determinism**: PDFs render byte-identical for a given record except the
+  embedded `/CreationDate`+`/ModDate` (the generation instant, correct to
+  vary). Tagged-PDF output is disabled (`tagged: false`) because Chromium's
+  structure-tree element ids (`node%08d`) come from a session-global counter and
+  would otherwise make renders differ. If accessible/tagged PDFs are wanted
+  later, re-enable tagging and have any determinism check normalise those ids
+  plus the dates rather than comparing raw bytes.
+- **Chromium dependency**: rendering uses `puppeteer-core` against a system
+  Chrome/Chromium (no bundled download). Production must provide a binary and
+  point `PUPPETEER_EXECUTABLE_PATH` at it (the Fly.io image needs chromium
+  installed). The service throws a clear 500 if no binary is found.
+- **Render-on-demand**: every download re-renders from the immutable record (no
+  stored PDF). Deterministic, so caching to R2 for email attachments / shared
+  links is a pure optimisation to add later, not a correctness need.
+
 ### Audit beforeState: handlers with non-`:id` URL params capture null
 
 The `AuditInterceptor.captureBeforeState` heuristic reads `req.params.id` to

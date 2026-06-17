@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>{{doc.invoiceNumber}}</title>
+{{{styleBlock}}}
+</head>
+<body>
+<div class="inv a">
+  <div class="a-head">
+    <div>
+      <img class="a-logo" src="{{logoDataUri}}" alt="{{company.name}}" />
+      <div class="a-org">
+        <div class="nm">{{company.name}}</div>
+        {{{company.addressHtml}}}<br/>
+        Tel: {{company.tel}} &nbsp;&middot;&nbsp; {{company.email}}<br/>
+        RC No: {{company.rcNo}} &nbsp;&middot;&nbsp; TIN: {{company.tin}}
+      </div>
+    </div>
+    <div class="a-docbox">
+      <div class="ttl">{{doc.title}}</div>
+      <div class="row"><span class="k">Invoice No.</span><span class="v">{{doc.invoiceNumber}}</span></div>
+      <div class="row"><span class="k">Invoice Date</span><span class="v">{{doc.invoiceDate}}</span></div>
+      <div class="row"><span class="k">Due Date</span><span class="v">{{doc.dueDate}}</span></div>
+      <div class="row"><span class="k">Sales Order</span><span class="v">{{doc.salesOrder}}</span></div>
+    </div>
+  </div>
+
+  <div class="a-parties">
+    <div class="a-party">
+      <div class="a-cap">Bill To</div>
+      <div class="pnm">{{billTo.name}}</div>
+      <div class="padr">{{{billTo.addressHtml}}}</div>
+    </div>
+    <div class="a-party">
+      <div class="a-cap">Ship To</div>
+      <div class="pnm">{{shipTo.name}}</div>
+      <div class="padr">{{{shipTo.addressHtml}}}</div>
+    </div>
+  </div>
+
+  <div class="a-meta">
+    <div class="a-mcell"><div class="k">Customer Code</div><div class="v{{#unless meta.customerCode.known}} muted{{/unless}}">{{meta.customerCode.value}}</div></div>
+    <div class="a-mcell"><div class="k">Customer PO</div><div class="v{{#unless meta.customerPO.known}} muted{{/unless}}">{{meta.customerPO.value}}</div></div>
+    <div class="a-mcell"><div class="k">Payment Terms</div><div class="v">{{meta.paymentTerms.value}}</div></div>
+    <div class="a-mcell"><div class="k">Salesperson</div><div class="v{{#unless meta.salesperson.known}} muted{{/unless}}">{{meta.salesperson.value}}</div></div>
+  </div>
+
+  <table class="a-lines">
+    <thead>
+      <tr>
+        <th style="width:34px" class="c">#</th>
+        <th>Product Description</th>
+        <th style="width:46px" class="c">UOM</th>
+        <th style="width:48px" class="r">Qty</th>
+        <th style="width:120px" class="r">Unit Price ({{currencySymbol}})</th>
+        <th style="width:130px" class="r">Amount ({{currencySymbol}})</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{#each lines}}
+      <tr><td class="c">{{this.idx}}</td><td><div class="desc">{{this.desc}}</div><div class="sku">{{this.sku}}</div></td><td class="c">{{this.uom}}</td><td class="r">{{this.qty}}</td><td class="r">{{this.unitPrice}}</td><td class="r">{{this.amount}}</td></tr>
+      {{/each}}
+    </tbody>
+  </table>
+
+  <div class="a-bottom">
+    <div class="a-words">
+      <div class="lbl">Amount in Words</div>
+      <div class="amt-words">{{amountInWords}}</div>
+    </div>
+    <div class="a-tot">
+      <div class="tr"><span class="k">Sub-Total</span><span class="v">{{totals.subtotal}}</span></div>
+      <div class="tr"><span class="k">{{totals.vatLabel}}</span><span class="v">{{totals.vatAmount}}</span></div>
+      <div class="tr grand"><span class="k">Grand Total</span><span class="v">{{totals.grandTotal}}</span></div>
+    </div>
+  </div>
+
+  <div class="a-foot">
+    <div class="a-sign">
+      <div class="a-sigline"><b>Prepared By</b>{{signatories.preparedBy}}<br/>Date: {{signatories.preparedDate}}</div>
+      <div class="a-sigline"><b>Approved By</b>{{signatories.approvedBy}}<br/>Date: ________________</div>
+      <div class="a-sigline"><b>Received By</b>{{signatories.receivedBy}}<br/>Date: ________________</div>
+    </div>
+    <div class="a-terms">
+      <span>All prices are inclusive of applicable charges. <span class="a-stamp">{{terms.stamp}}</span><br/>{{terms.note}}</span>
+      <span style="text-align:right; white-space:nowrap;">Bank: {{bank.name}}<br/>Acct: {{bank.account}}</span>
+    </div>
+  </div>
+</div>
+</body>
+</html>

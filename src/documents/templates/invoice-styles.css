@@ -1,0 +1,174 @@
+/* ============================================================================
+   Enviable invoice stylesheet. Single source of truth shared by the PDF
+   renderer and the in-app HTML view (one template, two consumers), so the
+   document a customer sees on screen is the document that prints.
+
+   Lifted verbatim from the approved design directions: Direction A
+   ("Official Ledger") drives the sales invoice, Direction C ("Branded Band")
+   drives the proforma invoice. Brand tokens (navy #0E1A4A, blue #1769E0,
+   Inter + JetBrains Mono, A4 at 794x1123px) are the design's own.
+
+   The @font-face rules for Inter and JetBrains Mono are injected ahead of this
+   sheet at render time (base64 woff2) so the document is fully self-contained
+   and renders identically offline.
+   ============================================================================ */
+
+:root {
+  --navy:    #0E1A4A;   /* logo deep navy */
+  --navy-2:  #16215c;
+  --blue:    #1769E0;   /* logo bright blue */
+  --blue-2:  #2C8DF5;
+  --ink:     #16181D;
+  --grey-700:#43474F;
+  --grey-600:#5b5f68;
+  --grey-500:#7B7F87;
+  --grey-400:#A6AAB2;
+  --grey-300:#D4D7DD;
+  --grey-200:#E6E8EC;
+  --grey-100:#F2F3F5;
+  --paper:   #FFFFFF;
+  --mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+  --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body { font-family: var(--sans); color: var(--ink); background: var(--grey-100); }
+
+/* The page sets its own A4 size with zero margin; the .inv fills it exactly. */
+@page { size: A4; margin: 0; }
+
+/* ============ SHARED A4 PAGE ============ */
+.inv {
+  width: 794px; height: 1123px;
+  background: var(--paper);
+  font-family: var(--sans);
+  color: var(--ink);
+  display: flex; flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+.inv .num { font-variant-numeric: tabular-nums; font-feature-settings: 'tnum'; }
+.inv .mono { font-family: var(--mono); }
+.inv table { border-collapse: collapse; width: 100%; }
+
+/* On screen the document sits centred on a neutral backdrop, like paper on a
+   desk; in print it is the page and nothing else. */
+@media screen {
+  body { display: flex; justify-content: center; padding: 24px 0; }
+  .inv { box-shadow: 0 1px 3px rgba(0,0,0,.10), 0 12px 36px rgba(0,0,0,.10); }
+}
+@media print {
+  body { background: #fff; }
+  .inv { box-shadow: none; }
+}
+
+/* ===================================================================
+   DIRECTION A - OFFICIAL LEDGER  (sales invoice)
+   =================================================================== */
+.a { padding: 40px 44px; }
+.a-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; padding-bottom: 16px; border-bottom: 2px solid var(--navy); }
+.a-logo { height: 52px; }
+.a-org { margin-top: 12px; font-size: 10.5px; color: var(--grey-700); line-height: 1.6; max-width: 320px; }
+.a-org .nm { font-size: 14px; font-weight: 700; color: var(--navy); letter-spacing: -0.01em; margin-bottom: 3px; }
+.a-docbox { width: 250px; flex-shrink: 0; border: 1px solid var(--navy); }
+.a-docbox .ttl { background: var(--navy); color: #fff; font-size: 13px; font-weight: 700; letter-spacing: 0.18em; text-align: center; padding: 8px 0; }
+.a-docbox .row { display: flex; justify-content: space-between; gap: 10px; font-size: 10px; padding: 5px 11px; border-bottom: 1px solid var(--grey-200); }
+.a-docbox .row:last-child { border-bottom: none; }
+.a-docbox .row .k { color: var(--grey-500); white-space: nowrap; }
+.a-docbox .row .v { font-weight: 600; font-family: var(--mono); font-size: 9.5px; white-space: nowrap; }
+
+.a-parties { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--grey-300); border-top: none; margin-top: 18px; }
+.a-party { padding: 11px 14px; }
+.a-party + .a-party { border-left: 1px solid var(--grey-300); }
+.a-cap { font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--blue); font-weight: 700; margin-bottom: 5px; }
+.a-party .pnm { font-size: 12.5px; font-weight: 700; color: var(--ink); margin-bottom: 2px; }
+.a-party .padr { font-size: 10.5px; color: var(--grey-700); line-height: 1.55; }
+
+.a-meta { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--grey-300); border-top: none; }
+.a-mcell { padding: 8px 14px; border-right: 1px solid var(--grey-200); }
+.a-mcell:last-child { border-right: none; }
+.a-mcell .k { font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--grey-500); font-weight: 600; margin-bottom: 2px; }
+.a-mcell .v { font-size: 11.5px; font-weight: 600; }
+.a-mcell .v.muted { color: var(--grey-400); font-weight: 500; }
+
+table.a-lines { margin-top: 18px; }
+table.a-lines th { background: var(--navy); color: #fff; font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; padding: 8px 10px; text-align: left; }
+table.a-lines th.r, table.a-lines td.r { text-align: right; }
+table.a-lines th.c, table.a-lines td.c { text-align: center; }
+table.a-lines td { font-size: 11px; padding: 9px 10px; border-bottom: 1px solid var(--grey-200); border-right: 1px solid var(--grey-200); }
+table.a-lines td:first-child { border-left: 1px solid var(--grey-200); }
+table.a-lines tbody tr:nth-child(even) td { background: #FAFBFC; }
+table.a-lines .desc { font-weight: 600; color: var(--ink); }
+table.a-lines .sku { font-family: var(--mono); font-size: 9px; color: var(--grey-500); margin-top: 2px; }
+table.a-lines td.r, table.a-lines td.c { font-variant-numeric: tabular-nums; }
+.a-empty td { height: 32px; }
+
+.a-bottom { display: grid; grid-template-columns: 1fr 280px; margin-top: 16px; gap: 20px; }
+.a-words { font-size: 10.5px; color: var(--grey-700); }
+.a-words .lbl { font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--grey-500); font-weight: 700; margin-bottom: 4px; }
+.a-words .amt-words { font-weight: 600; color: var(--ink); font-size: 11.5px; line-height: 1.5; border: 1px solid var(--grey-300); padding: 8px 11px; background: #FAFBFC; }
+.a-tot { border: 1px solid var(--grey-300); }
+.a-tot .tr { display: flex; justify-content: space-between; padding: 7px 13px; font-size: 11.5px; border-bottom: 1px solid var(--grey-200); }
+.a-tot .tr .k { color: var(--grey-600); white-space: nowrap; }
+.a-tot .tr .v { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.a-tot .tr.grand { background: var(--navy); color: #fff; border-bottom: none; padding: 11px 13px; }
+.a-tot .tr.grand .k { color: #cdd6ee; font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: 0.08em; }
+.a-tot .tr.grand .v { font-size: 16px; font-weight: 800; }
+
+.a-foot { margin-top: auto; padding-top: 18px; }
+.a-sign { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 28px; margin-bottom: 16px; }
+.a-sigline { border-top: 1px solid var(--grey-400); padding-top: 5px; font-size: 9.5px; color: var(--grey-500); }
+.a-sigline b { display: block; color: var(--ink); font-size: 10.5px; font-weight: 600; margin-bottom: 1px; }
+.a-terms { font-size: 9.5px; color: var(--grey-500); line-height: 1.6; border-top: 1px solid var(--grey-200); padding-top: 10px; display: flex; justify-content: space-between; gap: 16px; }
+.a-stamp { color: var(--blue); font-weight: 700; letter-spacing: 0.04em; }
+
+/* ===================================================================
+   DIRECTION C - BRANDED BAND  (proforma invoice)
+   =================================================================== */
+.c { padding: 0; }
+.c-band { background: var(--navy); color: #fff; padding: 32px 48px 28px; position: relative; overflow: hidden; }
+.c-band::after { content: ''; position: absolute; right: -60px; top: -40px; width: 260px; height: 260px; border-radius: 50%; background: radial-gradient(circle at 30% 30%, rgba(43,141,245,0.35), transparent 62%); }
+.c-band-top { display: flex; justify-content: space-between; align-items: center; position: relative; z-index: 1; }
+.c-logochip { background: #fff; border-radius: 8px; padding: 12px 16px; display: inline-flex; }
+.c-logochip img { height: 38px; }
+.c-word { font-size: 30px; font-weight: 800; letter-spacing: 0.04em; text-align: right; }
+.c-word .small { display: block; font-size: 11px; font-weight: 500; letter-spacing: 0.16em; color: #9fb2e6; margin-top: 4px; font-family: var(--mono); }
+.c-band-meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 26px; position: relative; z-index: 1; }
+.c-band-meta .k { font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.1em; color: #8ea3d8; font-weight: 600; margin-bottom: 3px; }
+.c-band-meta .v { font-size: 12px; font-weight: 600; font-family: var(--mono); }
+
+.c-body { padding: 26px 48px 0; flex: 1; display: flex; flex-direction: column; }
+.c-parties { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; padding-bottom: 22px; border-bottom: 1px solid var(--grey-200); }
+.c-cap { font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--blue); font-weight: 700; margin-bottom: 6px; }
+.c-party .pnm { font-size: 13px; font-weight: 700; margin-bottom: 3px; }
+.c-party .padr { font-size: 11px; color: var(--grey-700); line-height: 1.6; }
+
+table.c-lines { margin-top: 22px; }
+table.c-lines th { background: var(--grey-100); color: var(--navy); font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; padding: 9px 12px; text-align: left; }
+table.c-lines th:first-child { border-radius: 5px 0 0 5px; }
+table.c-lines th:last-child { border-radius: 0 5px 5px 0; }
+table.c-lines th.r, table.c-lines td.r { text-align: right; }
+table.c-lines th.c, table.c-lines td.c { text-align: center; }
+table.c-lines td { font-size: 11.5px; padding: 11px 12px; border-bottom: 1px solid var(--grey-200); }
+table.c-lines .desc { font-weight: 600; }
+table.c-lines .sku { font-family: var(--mono); font-size: 9.5px; color: var(--grey-400); margin-top: 2px; }
+table.c-lines td.r, table.c-lines td.c { font-variant-numeric: tabular-nums; }
+
+.c-bottom { display: grid; grid-template-columns: 1fr 300px; gap: 24px; margin-top: 20px; align-items: start; }
+.c-words { font-size: 11px; color: var(--grey-700); line-height: 1.55; }
+.c-words .lbl { font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--grey-400); font-weight: 700; margin-bottom: 4px; }
+.c-words b { color: var(--ink); font-weight: 600; }
+.c-paybox { margin-top: 18px; background: #F4F8FE; border: 1px solid #D9E6FA; border-radius: 6px; padding: 11px 13px; font-size: 10.5px; color: var(--grey-700); line-height: 1.6; }
+.c-paybox .lbl { font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--blue); font-weight: 700; margin-bottom: 4px; }
+.c-paybox b { color: var(--ink); font-weight: 600; }
+.c-tot { border-radius: 6px; overflow: hidden; border: 1px solid var(--grey-200); }
+.c-tot .tr { display: flex; justify-content: space-between; gap: 10px; padding: 9px 14px; font-size: 12px; color: var(--grey-700); border-bottom: 1px solid var(--grey-200); }
+.c-tot .tr .k { white-space: nowrap; }
+.c-tot .tr .v { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.c-tot .tr.grand { background: var(--blue); color: #fff; border-bottom: none; padding: 13px 14px; align-items: center; }
+.c-tot .tr.grand .k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; color: #dce9ff; }
+.c-tot .tr.grand .v { color: #fff; font-size: 19px; font-weight: 800; }
+
+.c-foot { margin-top: auto; background: var(--navy); color: #c8d3ee; padding: 16px 48px; display: flex; justify-content: space-between; align-items: center; gap: 20px; font-size: 9.5px; line-height: 1.6; }
+.c-foot .sign { color: #fff; font-weight: 600; font-size: 10.5px; }
+.c-foot .stamp { color: var(--blue-2); font-weight: 700; letter-spacing: 0.04em; }

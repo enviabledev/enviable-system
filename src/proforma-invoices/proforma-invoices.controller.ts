@@ -2,18 +2,25 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   HttpCode,
   Param,
   Post,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { Principal } from '../auth/auth.service';
 import { Audit, CurrentUser, RequirePermissions } from '../common/decorators';
+import { PdfRendererService } from '../documents/pdf-renderer.service';
 import { CreateProformaInvoiceDto } from './dto/create-proforma-invoice.dto';
 import { ProformaInvoicesService } from './proforma-invoices.service';
 
 @Controller()
 export class ProformaInvoicesController {
-  constructor(private readonly proformaInvoices: ProformaInvoicesService) {}
+  constructor(
+    private readonly proformaInvoices: ProformaInvoicesService,
+    private readonly pdfRenderer: PdfRendererService,
+  ) {}
 
   @Get('purchase-orders/:poId/proforma-invoices')
   @RequirePermissions('pi.read')
@@ -25,6 +32,27 @@ export class ProformaInvoicesController {
   @RequirePermissions('pi.read')
   findOne(@Param('id') id: string) {
     return this.proformaInvoices.findOne(id);
+  }
+
+  // PDF + in-app HTML view, gated on the existing proforma-read permission.
+  // @Res() sends the binary verbatim; guards still enforce pi.read (which sales
+  // roles do not hold, so procurement cost figures stay with procurement).
+  @Get('proforma-invoices/:id/pdf')
+  @RequirePermissions('pi.read')
+  async pdf(@Param('id') id: string, @Res() res: Response): Promise<void> {
+    const { filename, pdf } = await this.pdfRenderer.renderProformaInvoicePdf(id);
+    res
+      .header('Content-Type', 'application/pdf')
+      .header('Content-Disposition', `attachment; filename="${filename}"`)
+      .send(pdf);
+  }
+
+  @Get('proforma-invoices/:id/html')
+  @RequirePermissions('pi.read')
+  @Header('Content-Type', 'text/html; charset=utf-8')
+  async html(@Param('id') id: string): Promise<string> {
+    const { html } = await this.pdfRenderer.renderProformaInvoiceHtml(id);
+    return html;
   }
 
   @Post('purchase-orders/:poId/proforma-invoices')
