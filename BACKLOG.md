@@ -8,6 +8,40 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
+### DISCONTINUED variant enforcement: scope and the procurement decision (Prompt 33-C)
+
+Prompt 33-B left DISCONTINUED advisory; the consuming create-flows now enforce
+it via a shared helper (`src/products/variant-status.ts`,
+`assertVariantsActive` / `discontinuedVariantMessage`). Enforced in: assembly
+start (`startAssembly`), sales-order line resolution (`resolveLines`, so create
+AND line-replacement), price entry creation (`setPrice`), and historical-load
+units (surfaced as a per-row validation error). Existing references are never
+touched (the guard only gates the references being created). Deliberate scope
+boundaries:
+
+- **Procurement (PO / PI) is NOT guarded.** Purchase-order and proforma-invoice
+  line creation also reference variants, but they are procurement, not "new
+  business" in the sell/assemble sense, and a variant can be discontinued while
+  POs/PIs are still in flight. Left unguarded on purpose. Decide before launch
+  whether creating a NEW PO line for a discontinued variant should also be
+  blocked (a separate call from receiving already-ordered stock).
+- **Manifest receipt is NOT guarded, and must not be.** Receiving units against
+  an existing shipment fulfils an order placed while the variant was active; it
+  is an existing reference being completed, not new business. Guarding it would
+  strand already-purchased stock.
+- **The guard reads status outside the persistence transaction** in the SO,
+  assembly and pricing flows (it runs in the pre-transaction resolve step, the
+  same place existing existence/state checks live). A variant discontinued in
+  the microsecond between the check and the write would slip through once; the
+  consequence is one extra reference to a freshly-discontinued variant, not a
+  correctness violation. Acceptable for admin-paced catalogue changes; tighten
+  by moving the check inside the tx if it ever matters.
+- **Historical-load reports it as a row error**, consistent with how that
+  endpoint reports every other validation problem (unknown SKU, duplicates), so
+  a bulk file naming a discontinued SKU fails validation with the standard
+  message rather than a bare 409. Operational path to load historical data for a
+  discontinued item: reactivate, load, deactivate again.
+
 ### Variant management: design choices and a uniqueness-hardening follow-up (Prompt 33-B)
 
 Variant management (`src/products/product-variants.*`) shipped as create + edit

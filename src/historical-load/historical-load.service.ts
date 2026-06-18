@@ -7,6 +7,7 @@ import {
   MovementReferenceType,
   MovementType,
   Prisma,
+  ProductStatus,
   ProformaInvoiceStatus,
   PurchaseOrderStatus,
   ShipmentStatus,
@@ -14,6 +15,7 @@ import {
   UnitStatus,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { discontinuedVariantMessage } from '../products/variant-status';
 import { generatePoNumber } from '../purchase-orders/po-number';
 import { generateShipmentReference } from '../shipments/shipment-reference';
 import {
@@ -140,14 +142,29 @@ export class HistoricalLoadService {
     ];
     const variants = await this.prisma.productVariant.findMany({
       where: { supplierSkuCode: { in: skus } },
-      select: { id: true, supplierSkuCode: true },
+      select: { id: true, supplierSkuCode: true, status: true },
     });
     const skuToId = new Map(variants.map((v) => [v.supplierSkuCode, v.id]));
+    // Historical-load still creates new rows, so the discontinued guard applies
+    // here too: backfilling against a discontinued variant is blocked with the
+    // same message. To load historical data for a discontinued item, reactivate
+    // it, load, then deactivate again (intentional, small friction).
+    const discontinuedSkus = new Set(
+      variants
+        .filter((v) => v.status === ProductStatus.DISCONTINUED)
+        .map((v) => v.supplierSkuCode),
+    );
     rows.forEach((r, i) => {
-      if (r.productVariantSku && !skuToId.has(r.productVariantSku)) {
+      if (!r.productVariantSku) return;
+      if (!skuToId.has(r.productVariantSku)) {
         errors.push({
           row: csvRowNumber(i),
           message: `unknown productVariantSku: ${r.productVariantSku}`,
+        });
+      } else if (discontinuedSkus.has(r.productVariantSku)) {
+        errors.push({
+          row: csvRowNumber(i),
+          message: discontinuedVariantMessage([r.productVariantSku], 'units'),
         });
       }
     });

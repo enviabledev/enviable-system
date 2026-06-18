@@ -17,6 +17,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { isUniqueViolationOn } from '../common/prisma-errors';
+import { assertVariantsActive } from '../products/variant-status';
 import { transitionUnit } from '../units/transition-unit';
 import { PricingService } from '../pricing/pricing.service';
 import { CreateSalesOrderDto } from './dto/create-sales-order.dto';
@@ -574,6 +575,14 @@ export class SalesOrdersService {
         lineTotal: unitPrice.sub(discountAmount),
       });
     }
+    // A discontinued variant cannot be sold anew (covers both create and the
+    // line-replacement path). Existing SO lines are untouched: this gates only
+    // the lines being resolved for a new/edited order.
+    await assertVariantsActive(
+      this.prisma,
+      resolved.map((l) => l.productVariantId),
+      'sales orders',
+    );
     return resolved;
   }
 

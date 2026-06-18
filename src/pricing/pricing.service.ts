@@ -7,6 +7,7 @@ import {
 import { PriceListEntry, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { isUniqueViolationOn } from '../common/prisma-errors';
+import { assertVariantsActive } from '../products/variant-status';
 import { QueryPriceListDto } from './dto/query-price-list.dto';
 import { SetPriceDto } from './dto/set-price.dto';
 
@@ -83,6 +84,13 @@ export class PricingService {
         `Product variant ${dto.productVariantId} not found`,
       );
     }
+    // No new price may be set for a discontinued variant; existing price-list
+    // entries (current and historical) keep resolving.
+    await assertVariantsActive(
+      this.prisma,
+      [dto.productVariantId],
+      'price entries',
+    );
     const tier = await this.prisma.customerTier.findUnique({
       where: { id: dto.customerTierId },
       select: { id: true },

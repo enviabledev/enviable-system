@@ -11,6 +11,7 @@ import {
   UnitStatus,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { assertVariantsActive } from '../products/variant-status';
 import { transitionUnit } from '../units/transition-unit';
 
 const JOB_INCLUDE = {
@@ -41,6 +42,14 @@ export class AssemblyService {
         );
       }
     }
+
+    // No new CBU units may be assembled from a discontinued variant; existing
+    // CKD units stay readable, they just cannot start a new assembly job.
+    await assertVariantsActive(
+      this.prisma,
+      resolved.map((unit) => unit.productVariantId),
+      'units',
+    );
 
     return this.prisma.$transaction(async (tx) => {
       const jobs = [];
