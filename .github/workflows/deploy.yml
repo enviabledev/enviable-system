@@ -59,6 +59,7 @@ jobs:
               ": > /opt/enviable/.env",
               "for p in $(aws ssm get-parameters-by-path --path '"$SSM_PREFIX"' --with-decryption --recursive --query \"Parameters[].Name\" --output text); do k=$(basename \"$p\"); v=$(aws ssm get-parameter --name \"$p\" --with-decryption --query Parameter.Value --output text); echo \"$k=$v\" >> /opt/enviable/.env; done",
               "aws ecr get-login-password --region '"$AWS_REGION"' | docker login --username AWS --password-stdin '"${ECR%/*}"'",
+              "# BACKEND_IMAGE is interpolated from .env; cwd must remain /opt/enviable so Compose auto-loads /opt/enviable/.env",
               "docker compose -f /opt/enviable/docker-compose.yml pull",
               "docker compose -f /opt/enviable/docker-compose.yml up -d",
               "docker image prune -f"
@@ -67,3 +68,8 @@ jobs:
           echo "Command: $CMD_ID"
           aws ssm wait command-executed --region "$AWS_REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" || true
           aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --query "{Status:Status,Out:StandardOutputContent,Err:StandardErrorContent}" --output json
+          STATUS=$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --query "Status" --output text)
+          if [ "$STATUS" != "Success" ]; then
+            echo "ERROR: SSM command finished with status '$STATUS' — deploy failed on instance."
+            exit 1
+          fi
