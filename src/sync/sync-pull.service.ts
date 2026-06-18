@@ -320,6 +320,11 @@ export class SyncPullService {
       products: inScope('product')
         ? await this.prisma.product.findMany({ where: updatedIn })
         : [],
+      // Full row: id, productId, supplierSkuCode, variantAttributes,
+      // currentMarketPrice, status. No secret column on a variant, and this is
+      // exactly the field set the variant-management UI needs (status included,
+      // so a DISCONTINUED variant reads as deactivated offline). currentMarketPrice
+      // is selling-side and visible to all per I-8.
       productVariants: inScope('productVariant')
         ? await this.prisma.productVariant.findMany({ where: updatedIn })
         : [],

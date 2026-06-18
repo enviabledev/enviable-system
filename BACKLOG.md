@@ -8,6 +8,42 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
+### Variant management: design choices and a uniqueness-hardening follow-up (Prompt 33-B)
+
+Variant management (`src/products/product-variants.*`) shipped as create + edit
+only, gated on the new `productvariant.manage` permission (granted to Managing
+Director, Executive Director, General Manager, Procurement Officer, and IT Admin
+via `*`). Deliberate choices and one hardening item:
+
+- **No DELETE endpoint (option b).** Any variant that has ever been used is
+  referenced by units, sales-order lines and price-list entries, so a guarded
+  hard-delete would almost never succeed and a soft-delete is indistinguishable
+  from deactivation. Deactivation is `PATCH status=DISCONTINUED`: it stops new
+  use while existing references keep resolving. This also meant NO schema
+  migration was needed (no `deletedAt` added; the `ProductStatus` enum already
+  carries ACTIVE/DISCONTINUED). If a true "remove an unused, never-referenced
+  variant" operation is ever wanted, add a guarded DELETE then.
+- **SKU is immutable.** `supplierSkuCode` cannot be changed via PATCH; the DTO
+  declares `supplierSkuCode`/`sku` only so the attempt survives the global
+  whitelist and is rejected with an explanatory 400 (rename would silently
+  change what every historical unit/SO/price-list row displays).
+- **SKU uniqueness is enforced app-level only.** Create rejects a duplicate
+  `supplierSkuCode` with a 409, but there is no DB unique constraint on the
+  column (it is only `@@index`ed), so a concurrent double-create could still
+  race two identical SKUs in. Harden with a unique index (a raw-SQL migration,
+  per the partial-unique-index pattern) before high-volume catalogue editing.
+  Check the seed for any intentional duplicate SKUs across products first.
+- **"DISCONTINUED blocks new use" is not yet enforced in the consuming paths.**
+  The management endpoint sets the status, but assembly / sales-order-line /
+  price-list creation do not currently reject a DISCONTINUED variant. Probe E
+  only asserts existing references still resolve (they do). Add a status check
+  to those create paths when the deactivation semantics need to bite, not just
+  be advisory.
+- **Status semantics: DISCONTINUED is the deactivated state.** The prompt spoke
+  of ACTIVE/INACTIVE, but the schema enum is `ProductStatus {ACTIVE,
+  DISCONTINUED}`; the endpoints use the existing enum rather than introduce a
+  new one. The frontend should label DISCONTINUED as "Inactive/Discontinued".
+
 ### Customer management: audit outcome and the delete guard (Prompt 33-A)
 
 The customer management endpoints already existed (POST/PATCH/DELETE on

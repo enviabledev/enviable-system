@@ -49,6 +49,7 @@ const PERMISSIONS: { key: string; category: string; description: string }[] = [
   { key: 'sparepart.read', category: 'inventory', description: 'View spare parts' },
   { key: 'sparepart.manage', category: 'inventory', description: 'Manage spare parts' },
   { key: 'product.read', category: 'inventory', description: 'View the product catalogue (variants, SKUs, attributes)' },
+  { key: 'productvariant.manage', category: 'inventory', description: 'Create and edit product variants (catalogue)' },
   // Assembly
   { key: 'assembly.read', category: 'assembly', description: 'View assembly jobs' },
   { key: 'assembly.perform', category: 'assembly', description: 'Start/complete/fail assembly jobs' },
@@ -96,10 +97,10 @@ const ROLES: { name: string; description: string; permissions: string[] }[] = [
     description: 'Top executive, read-wide plus approvals',
     permissions: [
       'counterparty.read', 'po.read', 'po.approve', 'pi.read', 'shipment.read', 'unit.read',
-      'movement.read', 'sparepart.read', 'product.read', 'assembly.read', 'customer.read',
-      'pricelist.read', 'salesorder.read', 'payment.confirm', 'costdata.view', 'report.stocks',
-      'report.revenue', 'report.customers', 'approval.read', 'toggle.read', 'user.read',
-      'role.read', 'document.read',
+      'movement.read', 'sparepart.read', 'product.read', 'productvariant.manage', 'assembly.read',
+      'customer.read', 'pricelist.read', 'salesorder.read', 'payment.confirm', 'costdata.view',
+      'report.stocks', 'report.revenue', 'report.customers', 'approval.read', 'toggle.read',
+      'user.read', 'role.read', 'document.read',
     ],
   },
   {
@@ -107,8 +108,9 @@ const ROLES: { name: string; description: string; permissions: string[] }[] = [
     description: 'Executive sponsor, approvals and oversight',
     permissions: [
       'counterparty.read', 'po.read', 'po.approve', 'pi.read', 'pi.review', 'shipment.read',
-      'unit.read', 'movement.read', 'sparepart.read', 'product.read', 'assembly.read',
-      'customer.read', 'pricelist.read', 'salesorder.read', 'payment.confirm', 'costdata.view',
+      'unit.read', 'movement.read', 'sparepart.read', 'product.read', 'productvariant.manage',
+      'assembly.read', 'customer.read', 'pricelist.read', 'salesorder.read', 'payment.confirm',
+      'costdata.view',
       'report.stocks', 'report.revenue', 'report.customers', 'approval.read', 'approval.manage',
       'toggle.read', 'user.read', 'role.read', 'document.read',
     ],
@@ -119,7 +121,8 @@ const ROLES: { name: string; description: string; permissions: string[] }[] = [
     permissions: [
       'counterparty.read', 'counterparty.manage', 'po.read', 'po.approve', 'pi.read', 'pi.review',
       'shipment.read', 'shipment.manage', 'unit.read', 'unit.adjust', 'movement.read',
-      'sparepart.read', 'product.read', 'assembly.read', 'customer.read', 'pricelist.read',
+      'sparepart.read', 'product.read', 'productvariant.manage', 'assembly.read', 'customer.read',
+      'pricelist.read',
       'pricelist.manage', 'salesorder.read', 'payment.confirm', 'delivery.manage', 'return.manage',
       'costdata.view', 'report.stocks', 'report.revenue', 'report.customers', 'conflict.resolve',
       'approval.read', 'toggle.read', 'user.read', 'role.read', 'document.read', 'document.manage',
@@ -139,7 +142,8 @@ const ROLES: { name: string; description: string; permissions: string[] }[] = [
     permissions: [
       'counterparty.read', 'counterparty.manage', 'po.read', 'po.create', 'po.submit', 'pi.read',
       'pi.review', 'shipment.read', 'shipment.manage', 'shipment.receive', 'landedcost.manage',
-      'unit.read', 'movement.read', 'sparepart.read', 'product.read', 'costdata.view',
+      'unit.read', 'movement.read', 'sparepart.read', 'product.read', 'productvariant.manage',
+      'costdata.view',
       'document.read', 'document.manage',
     ],
   },
