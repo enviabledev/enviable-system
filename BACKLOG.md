@@ -8,6 +8,27 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
+### PO-line DISCONTINUED guard: the procurement decision, resolved (Prompt 33-D)
+
+The 33-C open question (block new POs for discontinued variants?) is resolved:
+yes. Purchase-order line creation now applies `assertVariantsActive` (noun
+"purchase order lines") in both the `create` and the line-replacement `update`
+paths, pre-transaction, with the same consistent 409 message. Rationale:
+discontinued means "winding this down across the business", so issuing fresh
+procurement contradicts the intent, and procurement may not know about the
+deactivation; surfacing it at the spend decision is the point. Workaround for
+the rare strategic-tail/backlog case is the standard one: reactivate, raise the
+PO, deactivate again.
+
+Where this leaves the variant guard map (for whoever revisits it):
+- BLOCKED (new business): assembly start, SO lines, price entries,
+  historical-load units (33-C), and now PO lines (33-D).
+- NOT blocked (fulfilling existing commitments): manifest receipt (receiving
+  already-ordered stock) and proforma-invoice lines (a PI documents a PO already
+  placed; blocking it would strand an in-flight order). If operational use later
+  shows a PI is ever raised for a genuinely new discontinued-variant purchase
+  rather than against an existing PO, revisit the PI exclusion.
+
 ### DISCONTINUED variant enforcement: scope and the procurement decision (Prompt 33-C)
 
 Prompt 33-B left DISCONTINUED advisory; the consuming create-flows now enforce

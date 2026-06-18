@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { Prisma, PurchaseOrderStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { assertVariantsActive } from '../products/variant-status';
 import { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto';
 import { PoLineDto } from './dto/po-line.dto';
 import { QueryPurchaseOrdersDto } from './dto/query-purchase-orders.dto';
@@ -51,6 +52,15 @@ export class PurchaseOrdersService {
   async create(dto: CreatePurchaseOrderDto) {
     await this.assertSupplierActive(dto.supplierId);
     await this.assertVariantsExist(dto.lines);
+    // No new PO may be raised for a discontinued variant: issuing fresh
+    // procurement contradicts winding the variant down. Existence is checked
+    // above (400); this gates status (409). Pre-transaction, so the whole PO
+    // fails atomically before any line is written.
+    await assertVariantsActive(
+      this.prisma,
+      dto.lines.map((line) => line.productVariantId),
+      'purchase order lines',
+    );
     const totalValue = this.computeTotal(dto.lines);
 
     return this.prisma.$transaction(async (tx) => {
@@ -88,6 +98,13 @@ export class PurchaseOrdersService {
     }
     if (dto.lines) {
       await this.assertVariantsExist(dto.lines);
+      // Same guard on the line-replacement path: adding/replacing a line for a
+      // discontinued variant on an existing PO is blocked too.
+      await assertVariantsActive(
+        this.prisma,
+        dto.lines.map((line) => line.productVariantId),
+        'purchase order lines',
+      );
     }
     const totalValue = dto.lines
       ? this.computeTotal(dto.lines)

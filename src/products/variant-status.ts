@@ -5,7 +5,11 @@ import { Prisma, ProductStatus } from '@prisma/client';
  * The noun a consuming flow is trying to create. Keeps the discontinued-variant
  * message consistent across flows (only the noun changes).
  */
-export type VariantUsageNoun = 'units' | 'sales orders' | 'price entries';
+export type VariantUsageNoun =
+  | 'units'
+  | 'sales orders'
+  | 'price entries'
+  | 'purchase order lines';
 
 /** The single source of truth for the discontinued-variant message. */
 export function discontinuedVariantMessage(
