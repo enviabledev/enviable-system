@@ -32,6 +32,14 @@ COPY --from=build /app/dist ./dist
 # Copy generated Prisma client artefacts (query engine + type bindings)
 # produced by `prisma generate` in the build stage.
 COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
+# The generated client can ship a query engine whose OpenSSL target mismatches
+# the runtime (a Prisma native-detection quirk on -slim images: .prisma/client
+# gets the 1.1.x engine while the runtime is debian-openssl-3.0.x). Place the
+# matching 3.0.x query engine — present in @prisma/engines and already used by
+# the schema engine for migrations — where Prisma Client looks for it. Fails the
+# build loudly if absent, rather than crash-looping at runtime.
+RUN cp -f node_modules/@prisma/engines/libquery_engine-debian-openssl-3.0.x.so.node \
+        node_modules/.prisma/client/
 COPY --from=build /app/prisma ./prisma
 COPY docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
