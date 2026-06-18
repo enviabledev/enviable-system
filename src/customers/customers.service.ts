@@ -1,9 +1,25 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { CustomerTierStatus, Prisma } from '@prisma/client';
+import {
+  CustomerStatus,
+  CustomerTierStatus,
+  Prisma,
+  SalesOrderStatus,
+} from '@prisma/client';
+
+// Terminal sales-order states do not block customer deletion. CLOSED and
+// CANCELLED are the prompt's baseline; REFUNDED is terminal in the same sense (a
+// settled, closed-out order), so it is treated as non-blocking too. Every other
+// state is an in-flight order that keeps the customer un-deletable.
+const TERMINAL_SO_STATES: SalesOrderStatus[] = [
+  SalesOrderStatus.CLOSED,
+  SalesOrderStatus.CANCELLED,
+  SalesOrderStatus.REFUNDED,
+];
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { QueryCustomersDto } from './dto/query-customers.dto';
@@ -131,9 +147,27 @@ export class CustomersService {
 
   async softDelete(id: string) {
     await this.findOne(id);
+    // Application-layer referential guard: a customer with in-flight sales
+    // orders cannot be deleted. Soft-deleted SOs and terminal-state SOs do not
+    // count; everything else blocks. The DB FK stays the authoritative link,
+    // this is the usability guard with a clear message.
+    const activeSalesOrders = await this.prisma.salesOrder.count({
+      where: {
+        customerId: id,
+        deletedAt: null,
+        status: { notIn: TERMINAL_SO_STATES },
+      },
+    });
+    if (activeSalesOrders > 0) {
+      throw new ConflictException(
+        `Customer has ${activeSalesOrders} active sales order(s) and cannot be deleted; close or cancel them first`,
+      );
+    }
+    // Soft-delete keeps the customer attributable on historical sales orders and
+    // audit rows; status INACTIVE so any status-filtered view drops it too.
     return this.prisma.customer.update({
       where: { id },
-      data: { deletedAt: new Date() },
+      data: { deletedAt: new Date(), status: CustomerStatus.INACTIVE },
       include: { tier: TIER_SUMMARY },
     });
   }

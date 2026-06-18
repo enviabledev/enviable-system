@@ -8,6 +8,32 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
+### Customer management: audit outcome and the delete guard (Prompt 33-A)
+
+The customer management endpoints already existed (POST/PATCH/DELETE on
+`customers`, gated `customer.manage`, `@Audit`-annotated, matching the
+counterparties shape), and `customer.manage` was already seeded and granted to
+Head of Sales, Sales Manager, and Sales Officer (Warehouse). So this prompt was
+a narrow completion, not a build:
+
+- **Soft-delete now sets `status: INACTIVE` alongside `deletedAt`** (previously
+  only `deletedAt`), so status-filtered views drop a deleted customer too.
+- **Soft-delete now guards on in-flight sales orders.** A customer with any sales
+  order not in a terminal state cannot be deleted; the endpoint returns 409 with
+  a clear message. Terminal (non-blocking) states are CLOSED, CANCELLED, and
+  REFUNDED. REFUNDED was added to the prompt's CLOSED/CANCELLED baseline because
+  it is equally terminal (a settled, closed-out order); every other state
+  (including DELIVERED-not-yet-CLOSED) blocks. Revisit the terminal set if the SO
+  lifecycle changes (e.g. if DELIVERED becomes the true end state).
+- **Mirror unchanged but documented.** The customers bucket already mirrors the
+  full row (no secret column on Customer), which is exactly what the management
+  UI needs; added a docblock so a future sensitive field on Customer triggers an
+  explicit-select review rather than silently leaking.
+
+No new permission, DTO, or mirror-shape change was required; the create/update
+DTOs already cover every mutable Customer field (name, type, tier, phone, email,
+address, taxId, status).
+
 ### Credential operational completeness: notes (Prompt 32-backend)
 
 `POST /api/users` and `POST /api/users/:id/reset-password-required` now return

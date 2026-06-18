@@ -345,6 +345,11 @@ export class SyncPullService {
       warehouses: inScope('warehouse')
         ? await this.prisma.warehouse.findMany({ where: updatedIn })
         : [],
+      // Customers carry no secret column (no credential/cost field), so the
+      // full row is mirrored: name, type, tier, phone, email, address, taxId,
+      // status. This is exactly the field set the customer-management UI needs;
+      // a leaner select would starve it. If a sensitive field is ever added to
+      // Customer, switch this to an explicit select that excludes it.
       customers: inScope('customer')
         ? await this.prisma.customer.findMany({ where: updatedIn })
         : [],
