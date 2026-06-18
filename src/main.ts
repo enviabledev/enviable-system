@@ -61,6 +61,12 @@ async function bootstrap(): Promise<void> {
       resave: false,
       rolling: true,
       saveUninitialized: false,
+      // proxy true: trust the X-Forwarded-Proto header set by the TLS-terminating
+      // reverse proxy (Caddy) in front of this app, so express-session treats the
+      // request as secure and will set the `secure` cookie. Without this, behind a
+      // proxy that terminates TLS, Express sees plain HTTP and refuses to set the
+      // secure session cookie, silently breaking login in production.
+      proxy: true,
       cookie: {
         httpOnly: true,
         sameSite: 'lax',
