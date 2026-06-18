@@ -1,0 +1,69 @@
+name: deploy-backend
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR: ${{ vars.ECR_REPOSITORY_URL }}
+  BUCKET: ${{ vars.S3_BUCKET }}
+  SSM_PREFIX: ${{ vars.SSM_PREFIX }}
+  INSTANCE_ID: ${{ vars.INSTANCE_ID }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        run: aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "${ECR%/*}"
+
+      - name: Build and push image
+        run: |
+          IMAGE="$ECR:${GITHUB_SHA}"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Record image tag in SSM
+        run: aws ssm put-parameter --region "$AWS_REGION" --name "$SSM_PREFIX/BACKEND_IMAGE" --type String --overwrite --value "$IMAGE"
+
+      - name: Upload deploy artifacts to S3
+        run: aws s3 cp deploy/ "s3://$BUCKET/_deploy/" --recursive
+
+      - name: Trigger deploy on instance (SSM Run Command)
+        run: |
+          CMD_ID=$(aws ssm send-command \
+            --region "$AWS_REGION" \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "deploy ${GITHUB_SHA}" \
+            --parameters commands='[
+              "set -euo pipefail",
+              "cd /opt/enviable",
+              "aws s3 sync s3://'"$BUCKET"'/_deploy/ /opt/enviable/",
+              "umask 077",
+              ": > /opt/enviable/.env",
+              "for p in $(aws ssm get-parameters-by-path --path '"$SSM_PREFIX"' --with-decryption --recursive --query \"Parameters[].Name\" --output text); do k=$(basename \"$p\"); v=$(aws ssm get-parameter --name \"$p\" --with-decryption --query Parameter.Value --output text); echo \"$k=$v\" >> /opt/enviable/.env; done",
+              "aws ecr get-login-password --region '"$AWS_REGION"' | docker login --username AWS --password-stdin '"${ECR%/*}"'",
+              "docker compose -f /opt/enviable/docker-compose.yml pull",
+              "docker compose -f /opt/enviable/docker-compose.yml up -d",
+              "docker image prune -f"
+            ]' \
+            --query "Command.CommandId" --output text)
+          echo "Command: $CMD_ID"
+          aws ssm wait command-executed --region "$AWS_REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" || true
+          aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --query "{Status:Status,Out:StandardOutputContent,Err:StandardErrorContent}" --output json
