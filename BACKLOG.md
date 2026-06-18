@@ -8,6 +8,62 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
+### User/role module: known gaps and deliberate choices (Prompt 30)
+
+The users/roles management module (`src/users/`, `src/roles/`) is built and its
+eight probes pass. Items parked deliberately:
+
+- **Audit beforeState does not show a role-set diff.** The global
+  AuditInterceptor captures beforeState via a bare `findUnique` on the entity
+  row, which for a User is scalar columns only; role assignments live in the
+  `user_roles` junction, not on the row. So a `user.update` that swaps roles
+  records the NEW role set in afterState (the service returns the user with
+  userRoles included) but the OLD set is not in beforeState. Atomicity of the
+  swap is enforced in a transaction and verified at the DB level. If a true
+  before/after role diff in the audit is wanted, the interceptor would need a
+  per-entityType relation include (a generic-interceptor change), or the User
+  service would write a richer custom audit payload. Same shape as the existing
+  "non-:id params capture null beforeState" limitation below.
+- **Management-coverage guard covers user mutations, not role-permission
+  edits.** `UsersService` blocks any user change that would leave zero active
+  users holding `user.manage` (and blocks self-removal / self-deactivation /
+  self-delete). But `RolesService.update` can remove `user.manage` from a role's
+  permission set without that coverage check; if that role were the only source
+  of `user.manage`, it could strip the last manager. Mitigations today: roles
+  are recommended read-only at MVP (the frontend will not expose role edit), and
+  a role that is assigned to any user cannot be deleted. Consider adding the same
+  coverage assertion to the role permission-edit path before role editing is
+  exposed in the UI.
+- **System roles are editable (name/permissions), only delete is blocked.**
+  `RolesService` rejects deleting a `isSystemRole` role and any role still
+  assigned to a user, but PATCH can rename a seeded system role or change its
+  permissions. Renaming a system role would desync `prisma/seed.ts` (its upsert
+  keys on `name`, so a re-seed would create a duplicate). Acceptable while role
+  editing is not surfaced; lock system-role name edits if/when it is.
+- **`mustResetPassword` is exposed on the gated admin API, never on the mirror.**
+  The `user.read`/`user.manage` API responses include `mustResetPassword`
+  (useful for the admin to see "has not completed first login"); the offline
+  mirror (sync-pull) excludes it and the password hash entirely (verified by the
+  leak probe). This split is deliberate: the API is admin-gated, the mirror is
+  broader/offline.
+- **Default-password window.** Between user creation and first login the account
+  is reachable with the known `DEFAULT_INITIAL_PASSWORD`, but the
+  mustResetPassword gate confines it to the reset endpoint, so nothing is
+  accessible. This is the accepted design (no email infrastructure). If the
+  window is ever a concern, add a short creation-to-first-login expiry.
+
+### Build: invoice document assets now copy to dist/src (fixed, Prompt 30)
+
+Discovered while booting the built app for the Prompt 30 probes: `nest build`
+emits compiled code under `dist/src/` (tsc infers the rootDir across `src/` +
+`scripts/`), but the Prompt 28 `nest-cli.json` asset globs copied the invoice
+templates/fonts/logo to `dist/` (i.e. `dist/documents/...`). The renderer
+resolves assets relative to `__dirname` (`dist/src/documents`), so the built app
+crashed loading templates at startup (only `ts-node` against `src/` worked).
+Fixed by setting the asset `outDir` to `dist/src`; the built app now boots and
+`DocumentsModule` loads. If the build layout ever changes, re-verify the asset
+path resolves against the compiled `__dirname`.
+
 ### Invoice / proforma documents: fields not stored on the records (Prompt 28)
 
 The invoice + proforma PDF renderer (`src/documents/`) needs several

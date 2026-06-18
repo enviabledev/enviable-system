@@ -9,9 +9,15 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
-import { Public } from '../common/decorators';
-import { AuthService } from './auth.service';
+import {
+  Audit,
+  CurrentUser,
+  PasswordResetExempt,
+  Public,
+} from '../common/decorators';
+import { AuthService, Principal } from './auth.service';
 import { LoginDto } from './dto/login.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 
 export const SESSION_COOKIE_NAME = 'enviable.sid';
 
@@ -44,6 +50,9 @@ export class AuthController {
     return this.auth.getPrincipal(user.id);
   }
 
+  // Exempt from the reset gate so a must-reset user can still resolve their
+  // session (and read the mustResetPassword flag the frontend redirects on).
+  @PasswordResetExempt()
   @Get('me')
   async me(@Req() req: Request) {
     const userId = req.session.userId;
@@ -55,6 +64,26 @@ export class AuthController {
       throw new UnauthorizedException();
     }
     return principal;
+  }
+
+  // Self-service password reset and the endpoint the forced-reset flow uses.
+  // Authenticated (not @Public): the session proves identity, the body proves
+  // knowledge of the current password. Marked exempt so a must-reset user can
+  // reach it. @Audit records the event; no password value ever enters the audit
+  // row (afterState is the refreshed principal, which carries no hash).
+  @PasswordResetExempt()
+  @Post('reset-password')
+  @HttpCode(200)
+  @Audit('user.password_reset', 'User')
+  async resetPassword(
+    @Body() dto: ResetPasswordDto,
+    @CurrentUser() actor: Principal,
+  ) {
+    return this.auth.resetPassword(
+      actor.id,
+      dto.currentPassword,
+      dto.newPassword,
+    );
   }
 
   @Public()

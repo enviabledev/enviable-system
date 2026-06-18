@@ -18,8 +18,11 @@ const ALL_TYPES = [
   'warehouse',
   'customer',
   'sparePart',
-  // User directory (minimal: id + fullName, for offline staff attribution)
+  // User directory (non-sensitive management fields for the admin UI; never
+  // the password hash or the mustResetPassword flag) and the role catalogue
+  // (so role names resolve offline via the userRoles junction).
   'user',
+  'role',
   // Procurement
   'purchaseOrder',
   'purchaseOrderLine',
@@ -276,6 +279,7 @@ export class SyncPullService {
       customers: [] as unknown[],
       spareParts: [] as unknown[],
       users: [] as unknown[],
+      roles: [] as unknown[],
       purchaseOrders: [] as unknown[],
       purchaseOrderLines: [] as unknown[],
       lettersOfCredit: [] as unknown[],
@@ -348,23 +352,49 @@ export class SyncPullService {
         ? await this.prisma.sparePart.findMany({ where: updatedIn })
         : [],
 
-      // User directory: minimal non-sensitive display attribution only, so
-      // offline reads can resolve "performed by <name>" on every user-attributed
-      // field (audit actorId, approvedById, assembledById, cancelledById,
-      // movement actorId, etc.). The explicit `select` is load-bearing: it
-      // EXCLUDES passwordHash, email, phone, status, role/permission links, and
-      // every auth-adjacent column. NEVER widen this to a bare findMany (that
-      // would leak the password hash into the mirror). Standard updatedAt-keyed
-      // windowed delta. Soft-deleted users are intentionally included (a
-      // deactivated staffer who performed past actions must still resolve by
-      // name). Role labels are NOT mirrored: User-Role is many-to-many via
-      // UserRole (no single roleId), so resolving role names offline would need
-      // users + userRoles + roles joined client-side (a frontend change), and
-      // role is not part of name attribution anyway.
+      // User directory: serves two needs at once. (1) Offline "performed by
+      // <name>" attribution on every user-attributed field (audit actorId,
+      // approvedById, assembledById, cancelledById, movement actorId, etc.).
+      // (2) The user-management admin UI, which needs email, status, role
+      // assignments, and createdAt/lastLoginAt to render the directory offline.
+      // The explicit `select` is LOAD-BEARING and security-critical: it
+      // enumerates exactly the non-sensitive columns and NOTHING else. It MUST
+      // NEVER include passwordHash, mustResetPassword, or any auth-token data;
+      // never widen this to a bare findMany. Role names are resolved client-side
+      // by joining each user's userRoles[].roleId to the roles bucket below.
+      // Soft-deleted users are intentionally included (a deactivated staffer who
+      // performed past actions must still resolve by name).
       users: inScope('user')
         ? await this.prisma.user.findMany({
             where: updatedIn,
-            select: { id: true, fullName: true, updatedAt: true },
+            select: {
+              id: true,
+              fullName: true,
+              email: true,
+              status: true,
+              createdAt: true,
+              lastLoginAt: true,
+              updatedAt: true,
+              userRoles: { select: { roleId: true } },
+            },
+          })
+        : [],
+
+      // Role catalogue: lets the management UI resolve role names and their
+      // permission keys offline. Non-deleted roles only. No sensitive data here
+      // (roles and permissions are not secret), but kept to id/name/description
+      // plus the permission keys the UI actually renders.
+      roles: inScope('role')
+        ? await this.prisma.role.findMany({
+            where: { ...updatedIn, deletedAt: null },
+            select: {
+              id: true,
+              name: true,
+              description: true,
+              isSystemRole: true,
+              updatedAt: true,
+              rolePermissions: { select: { permission: { select: { key: true } } } },
+            },
           })
         : [],
 

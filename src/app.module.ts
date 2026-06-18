@@ -6,6 +6,7 @@ import { AuditInterceptor } from './audit/audit.interceptor';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
 import { AuthGuard } from './common/guards/auth.guard';
+import { PasswordResetGuard } from './common/guards/password-reset.guard';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 import { CostVisibilityInterceptor } from './common/interceptors/cost-visibility.interceptor';
 import { CounterpartiesModule } from './counterparties/counterparties.module';
@@ -23,8 +24,10 @@ import { SalesOrdersModule } from './sales-orders/sales-orders.module';
 import { ShipmentsModule } from './shipments/shipments.module';
 import { SparePartsModule } from './spare-parts/spare-parts.module';
 import { StockMovementsModule } from './stock-movements/stock-movements.module';
+import { RolesModule } from './roles/roles.module';
 import { SyncModule } from './sync/sync.module';
 import { UnitsModule } from './units/units.module';
+import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
@@ -49,13 +52,18 @@ import { UnitsModule } from './units/units.module';
     ReturnsModule,
     ReportsModule,
     SyncModule,
+    UsersModule,
+    RolesModule,
   ],
   providers: [
     // Global guards execute in registration order. AuthGuard MUST be first: it
-    // validates the session and attaches the principal that PermissionsGuard
-    // (second) reads to enforce @RequirePermissions. Authentication (401) is
-    // therefore resolved before authorisation (403).
+    // validates the session and attaches the principal that the later guards
+    // read. PasswordResetGuard runs second: a user whose mustResetPassword flag
+    // is set is confined to the reset endpoint before any authorisation check.
+    // PermissionsGuard runs last and enforces @RequirePermissions. So the order
+    // is authentication (401) -> forced-reset gate (403) -> authorisation (403).
     { provide: APP_GUARD, useClass: AuthGuard },
+    { provide: APP_GUARD, useClass: PasswordResetGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
     // ORDERING IS DELIBERATE. Nest processes interceptors' response operators in
     // REVERSE registration order: the LAST-registered interceptor transforms the

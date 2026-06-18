@@ -311,19 +311,31 @@ enum ConflictStatus {
 // ============================================================================
 
 model User {
-  id              String     @id @default(cuid())
-  fullName        String
-  email           String     @unique
-  phone           String?
-  passwordHash    String
-  status          UserStatus @default(ACTIVE)
-  reportsToUserId String?
-  reportsTo       User?      @relation("UserReports", fields: [reportsToUserId], references: [id])
-  reports         User[]     @relation("UserReports")
-  lastLoginAt     DateTime?
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
-  deletedAt       DateTime?
+  id                String     @id @default(cuid())
+  fullName          String
+  email             String     @unique
+  phone             String?
+  passwordHash      String
+  status            UserStatus @default(ACTIVE)
+  // Forces a password change on next login. Set true when an admin creates a
+  // user (the initial password is a known default) and when an admin requires a
+  // reset; cleared by the self-service reset endpoint. The mustResetPassword
+  // gate is the security property that makes the shared default safe: a user in
+  // this state may reach only the reset endpoint. NEVER mirrored (sync-pull).
+  mustResetPassword Boolean    @default(false)
+  reportsToUserId   String?
+  reportsTo         User?      @relation("UserReports", fields: [reportsToUserId], references: [id])
+  reports           User[]     @relation("UserReports")
+  lastLoginAt       DateTime?
+  // Actor columns for admin lifecycle actions. Plain id strings (no FK
+  // relation), consistent with UserRole.assignedBy: they record who acted for
+  // the audit trail without adding self-relations to User.
+  createdById       String?
+  deactivatedAt     DateTime?
+  deactivatedById   String?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+  deletedAt         DateTime?
 
   userRoles             UserRole[]
   auditEntries          AuditLogEntry[]        @relation("AuditActor")
@@ -349,12 +361,16 @@ model User {
 }
 
 model Role {
-  id           String   @id @default(cuid())
-  name         String   @unique
+  id           String    @id @default(cuid())
+  name         String    @unique
   description  String?
-  isSystemRole Boolean  @default(false)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  isSystemRole Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  // Soft-delete marker. A role is only deletable when no user is assigned it
+  // (enforced in the service); soft-deleted roles drop out of the catalogue but
+  // stay resolvable for any historical name lookup.
+  deletedAt    DateTime?
 
   userRoles         UserRole[]
   rolePermissions   RolePermission[]

@@ -157,6 +157,30 @@ export class AuditInterceptor implements NestInterceptor {
     if (value === undefined || value === null) {
       return null;
     }
-    return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+    const plain = JSON.parse(JSON.stringify(value)) as unknown;
+    return this.redactSensitive(plain) as Prisma.InputJsonValue;
+  }
+
+  // Strip security-sensitive keys from any captured state before it is written.
+  // The before-state path does a bare findUnique, so a User mutation would
+  // otherwise persist the argon2 hash into the audit row; this keeps the hash
+  // (and any future secret-shaped column) out of the audit log entirely.
+  private redactSensitive(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.redactSensitive(item));
+    }
+    if (value && typeof value === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [key, val] of Object.entries(value)) {
+        out[key] = SENSITIVE_KEYS.has(key)
+          ? REDACTED
+          : this.redactSensitive(val);
+      }
+      return out;
+    }
+    return value;
   }
 }
+
+const REDACTED = '[redacted]';
+const SENSITIVE_KEYS = new Set(['passwordHash', 'password']);

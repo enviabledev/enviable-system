@@ -10,6 +10,11 @@ export const AUDIT_KEY = 'enviable:audit';
 // audit log is the system of record and keeps full truth (Invariant I-8 design);
 // privacy comes from gating audit.read, not from sanitising the rows.
 export const SKIP_COST_STRIP_KEY = 'enviable:skipCostStrip';
+// Marks a handler reachable by a user in the must-reset-password state. The
+// PasswordResetGuard blocks every other authenticated route for such a user;
+// the reset endpoint itself (and read-only session resolution) carry this so
+// the user can actually complete the reset.
+export const PASSWORD_RESET_EXEMPT_KEY = 'enviable:passwordResetExempt';
 
 /** Shape stored by @Audit and consumed by the AuditInterceptor. */
 export interface AuditMetadata {
