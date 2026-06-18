@@ -14,6 +14,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { QueryUsersDto } from './dto/query-users.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { AdminResetResponse, CreateUserResponse } from './dto/user-responses';
 
 // The permission that confers user/role administration. The system must never
 // be left with zero active users holding it (single-point-of-failure guard).
@@ -76,20 +77,15 @@ export class UsersService {
     return user;
   }
 
-  async create(dto: CreateUserDto, actorId: string) {
-    const initialPassword = this.config.get<string>('DEFAULT_INITIAL_PASSWORD');
-    if (!initialPassword || initialPassword.trim().length === 0) {
-      // A server misconfiguration, not a client error: ops must set the var
-      // intentionally. There is deliberately no hardcoded fallback.
-      throw new InternalServerErrorException(
-        'DEFAULT_INITIAL_PASSWORD must be configured before users can be created',
-      );
-    }
+  async create(dto: CreateUserDto, actorId: string): Promise<CreateUserResponse> {
+    // Read at request time (not server start) so a rotated default takes effect
+    // without a restart.
+    const initialPassword = this.requireInitialPassword();
     await this.assertRolesExist(dto.roleIds);
 
     const passwordHash = await hashPassword(initialPassword);
     try {
-      return await this.prisma.user.create({
+      const user = await this.prisma.user.create({
         data: {
           fullName: dto.fullName,
           email: dto.email,
@@ -101,6 +97,11 @@ export class UsersService {
         },
         ...USER_VIEW,
       });
+      // initialPassword is returned transiently to the user.manage admin so they
+      // can relay it. It is the deployment default (not a per-user secret), is
+      // never returned on a read or in the mirror, and is redacted from the
+      // audit row. The field inclusion is explicit here, not implied by the gate.
+      return { user, initialPassword };
     } catch (err) {
       if (isUniqueViolationOn(err, { index: 'users_email_key', fields: ['email'] })) {
         throw new ConflictException(`A user with email ${dto.email} already exists`);
@@ -193,25 +194,53 @@ export class UsersService {
   }
 
   /**
-   * Admin-triggered "this user must reset on next login" without changing the
-   * password. Cannot target oneself (the UI never offers it; enforced here as
-   * defence in depth).
+   * Admin-triggered reset for a user who can no longer log in: set their
+   * password back to the deployment default AND force a change on next login, so
+   * the admin can hand them the default and they regain access through the reset
+   * gate. Cannot target oneself (would risk locking the admin out; the
+   * self-service /auth/reset-password endpoint is the path for changing one's
+   * own password). Returns the default so the admin can relay it.
    */
-  async requirePasswordReset(id: string, actorId: string) {
+  async requirePasswordReset(
+    id: string,
+    actorId: string,
+  ): Promise<AdminResetResponse> {
     await this.findOne(id);
     if (id === actorId) {
       throw new ForbiddenException(
-        'You cannot set a forced password reset on yourself',
+        'You cannot reset your own password here; use the self-service reset',
       );
     }
-    await this.prisma.user.update({
-      where: { id },
-      data: { mustResetPassword: true },
+    const initialPassword = this.requireInitialPassword();
+    const passwordHash = await hashPassword(initialPassword);
+    // passwordHash and the flag move together in one atomic statement inside a
+    // transaction: a failure leaves the user exactly as before (no partial
+    // state where the password changed but the flag did not, or vice versa).
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id },
+        data: { passwordHash, mustResetPassword: true },
+      });
     });
-    return this.prisma.user.findUniqueOrThrow({ where: { id }, ...USER_VIEW });
+    return { initialPassword };
   }
 
   // ── helpers ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Read and validate DEFAULT_INITIAL_PASSWORD at request time. Shared by create
+   * and admin-reset so both fail identically (a server misconfiguration, 500)
+   * when ops has not configured it. No hardcoded fallback by design.
+   */
+  private requireInitialPassword(): string {
+    const value = this.config.get<string>('DEFAULT_INITIAL_PASSWORD');
+    if (!value || value.trim().length === 0) {
+      throw new InternalServerErrorException(
+        'DEFAULT_INITIAL_PASSWORD must be configured before users can be created or reset',
+      );
+    }
+    return value;
+  }
 
   private async assertRolesExist(roleIds: string[]): Promise<void> {
     if (roleIds.length === 0) return;

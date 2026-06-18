@@ -8,6 +8,39 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
+### Credential operational completeness: notes (Prompt 32-backend)
+
+`POST /api/users` and `POST /api/users/:id/reset-password-required` now return
+the deployment-wide `initialPassword` (the bootstrap default) transiently to the
+user.manage admin who triggered the action. Deliberate refinements recorded so
+they are not mistaken for leaks:
+
+- **initialPassword exposure is intentional and bounded.** It is the deployment
+  default (`DEFAULT_INITIAL_PASSWORD`), never a per-user secret. Returned ONLY
+  from create and admin-reset (both user.manage gated), never on a read
+  (list/detail) or in the mirror (verified by leak probes D/E), and redacted
+  from the audit row. The field inclusion is explicit in the service, not
+  implied by the permission gate, so a future endpoint change cannot widen it by
+  accident.
+- **Audit redaction widened to `initialPassword`.** The audit interceptor's
+  SENSITIVE_KEYS now strips `passwordHash`, `password`, and `initialPassword`, so
+  the create/reset responses (which carry the cleartext default) never persist
+  it into the audit row. If another transient-credential field is ever added to
+  a response body, add its key here too.
+- **entityId extraction handles wrapped responses.** The audit interceptor now
+  resolves entityId from a nested `result.user.id` (create returns
+  `{ user, initialPassword }`) and falls back to the route `:id` (admin-reset
+  returns only `{ initialPassword }`). Any future endpoint that wraps its entity
+  or returns no id relies on this; revisit if a new response shape hides the id
+  deeper.
+- **Admin reset is atomic.** passwordHash and mustResetPassword move together in
+  one update inside a transaction; a mid-operation failure rolls back both
+  (probe H). There is no partial state where the password changed but the flag
+  did not.
+- **Admin cannot reset their own password via this endpoint** (unchanged
+  self-mod guard); the self-service `POST /api/auth/reset-password` is the path
+  for changing one's own password.
+
 ### User/role module: known gaps and deliberate choices (Prompt 30)
 
 The users/roles management module (`src/users/`, `src/roles/`) is built and its

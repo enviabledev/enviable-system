@@ -124,7 +124,11 @@ export class AuditInterceptor implements NestInterceptor {
         actorUserId: request.user?.id ?? null,
         action: meta.action,
         entityType: meta.entityType,
-        entityId: this.extractEntityId(result),
+        // Fall back to the route's :id when the response body carries no id of
+        // its own (e.g. the admin-reset endpoint returns only { initialPassword }).
+        entityId:
+          this.extractEntityId(result) ??
+          (typeof request.params?.id === 'string' ? request.params.id : null),
         beforeState,
         afterState: this.toJson(result),
         context: this.toJson({
@@ -142,12 +146,18 @@ export class AuditInterceptor implements NestInterceptor {
 
   private extractEntityId(result: unknown): string | null {
     if (result && typeof result === 'object' && !Array.isArray(result)) {
-      const id = (result as { id?: unknown }).id;
-      if (typeof id === 'string') {
-        return id;
+      const direct = (result as { id?: unknown }).id;
+      if (typeof direct === 'string') {
+        return direct;
       }
-      if (typeof id === 'number') {
-        return String(id);
+      if (typeof direct === 'number') {
+        return String(direct);
+      }
+      // Responses that wrap the entity (e.g. create returns
+      // { user, initialPassword }) expose the id one level down.
+      const nested = (result as { user?: { id?: unknown } }).user?.id;
+      if (typeof nested === 'string') {
+        return nested;
       }
     }
     return null;
@@ -183,4 +193,8 @@ export class AuditInterceptor implements NestInterceptor {
 }
 
 const REDACTED = '[redacted]';
-const SENSITIVE_KEYS = new Set(['passwordHash', 'password']);
+// passwordHash: never persist the stored hash. password/initialPassword: never
+// persist a cleartext credential that a response body may transiently carry
+// (the admin create/reset responses include initialPassword, the deployment
+// default, which must not land in the audit row).
+const SENSITIVE_KEYS = new Set(['passwordHash', 'password', 'initialPassword']);
