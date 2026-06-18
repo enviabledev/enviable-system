@@ -1,0 +1,33 @@
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+
+  backend:
+    image: ${BACKEND_IMAGE}
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    # not published to host; only Caddy reaches it on the compose network
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+volumes:
+  caddy_data:
+  caddy_config:
+  redis_data:

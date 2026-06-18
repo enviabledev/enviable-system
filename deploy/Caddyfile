@@ -1,0 +1,4 @@
+api.enviabletricycle.com {
+	encode gzip
+	reverse_proxy backend:3000
+}
