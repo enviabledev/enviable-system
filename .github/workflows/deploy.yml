@@ -5,6 +5,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Serialize deploys: only one runs at a time, the rest queue. Two deploys hitting
+# the same box concurrently race on `docker compose pull/up` and one fails.
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
 permissions:
   id-token: write
   contents: read
