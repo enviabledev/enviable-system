@@ -5,14 +5,6 @@ COPY package*.json ./
 RUN npm ci
 COPY . .
 RUN npx prisma generate && npm run build
-# Transpile the (TypeScript) seed to plain JS so the runtime image (which has no
-# ts-node) can run it on deploy. seed.ts imports only @prisma/client, so this is
-# self-contained. Explicit flags = tsconfig.json is ignored for this invocation.
-# tsc can exit non-zero on type-only errors yet still emit JS, so gate the build
-# on the emitted file existing rather than on tsc's exit code.
-RUN npx tsc prisma/seed.ts --outDir dist-seed --rootDir prisma \
-      --module commonjs --target es2021 --esModuleInterop --skipLibCheck; \
-    test -f dist-seed/seed.js
 
 # ---- runtime stage ----
 FROM node:22-bookworm-slim AS runtime
@@ -49,8 +41,6 @@ COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
 RUN cp -f node_modules/@prisma/engines/libquery_engine-debian-openssl-3.0.x.so.node \
         node_modules/.prisma/client/
 COPY --from=build /app/prisma ./prisma
-# Compiled idempotent seed, run by the entrypoint after migrations.
-COPY --from=build /app/dist-seed ./dist-seed
 COPY docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
 
