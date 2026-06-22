@@ -34,6 +34,7 @@ export class HistoricalLoadController {
     @Param('shipmentId') shipmentId: string,
     @UploadedFile() file: Express.Multer.File,
     @Query('dryRun') dryRun: string,
+    @Query('overrideSimilarityCheck') overrideSimilarityCheck: string,
     @CurrentUser() actor: Principal,
   ) {
     return this.historicalLoad.loadUnits(
@@ -41,6 +42,7 @@ export class HistoricalLoadController {
       file,
       dryRun === 'true',
       actor.id,
+      overrideSimilarityCheck === 'true',
     );
   }
 

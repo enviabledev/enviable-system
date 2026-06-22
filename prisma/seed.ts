@@ -345,6 +345,23 @@ async function main() {
     create: { id: 'seed-prod-zsplus', name: 'TVS King ZS+', manufacturerId: tvs.id, category: 'PASSENGER' },
   });
 
+  // Sentinel product for variants auto-created at supply-side entry points
+  // (historical-load, PO line) when an unknown supplier SKU first appears.
+  // Auto-created variants attach here, priced 0 with empty attributes, until an
+  // admin reclassifies them onto a real product via variant management. Do NOT
+  // delete: live auto-created variants point at this product until reclassified.
+  // The id is referenced by SENTINEL_PRODUCT_ID in src/products/variant-auto-create.ts.
+  await prisma.product.upsert({
+    where: { id: 'seed-product-pending-classification' },
+    update: { name: 'Pending Classification' },
+    create: {
+      id: 'seed-product-pending-classification',
+      name: 'Pending Classification',
+      manufacturerId: tvs.id,
+      category: 'PASSENGER',
+    },
+  });
+
   // supplierSkuCode carries VSK's SKU exactly as VSK ships it: case, spacing,
   // and the "+" character preserved, no normalization, no internal short codes.
   // Historical-load matches CSV "productVariantSku" against this column by exact

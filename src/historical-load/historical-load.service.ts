@@ -14,8 +14,16 @@ import {
   SparePartMovementType,
   UnitStatus,
 } from '@prisma/client';
+import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { discontinuedVariantMessage } from '../products/variant-status';
+import {
+  createAutoVariant,
+  findSimilarVariant,
+  levenshtein,
+  SimilarVariantMatch,
+  VariantCandidate,
+} from '../products/variant-auto-create';
 import { generatePoNumber } from '../purchase-orders/po-number';
 import { generateShipmentReference } from '../shipments/shipment-reference';
 import {
@@ -30,7 +38,10 @@ const UNIT_BATCH_SIZE = 500;
 
 @Injectable()
 export class HistoricalLoadService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   /**
    * Create the one-off PO + PI + Shipment representing a historical arrival, in
@@ -100,6 +111,7 @@ export class HistoricalLoadService {
     file: Express.Multer.File | undefined,
     dryRun: boolean,
     actorUserId: string,
+    overrideSimilarityCheck = false,
   ) {
     const shipment = await this.prisma.shipment.findUnique({
       where: { id: shipmentId },
@@ -136,7 +148,12 @@ export class HistoricalLoadService {
         errors.push({ row, message: 'missing chassisNumber' });
     });
 
-    // SKU resolution against productVariant.supplierSkuCode.
+    // SKU resolution against productVariant.supplierSkuCode. Unknown SKUs are no
+    // longer rejected: the supply side auto-creates a variant the first time a
+    // SKU appears (the catalogue emerges from procurement, it does not gate it).
+    // Resolution has three outcomes per SKU: exact existing match (use it),
+    // similar-to-existing (block for the user to confirm, unless overridden), or
+    // genuinely new (auto-create on commit).
     const skus = [
       ...new Set(rows.map((r) => r.productVariantSku).filter(Boolean)),
     ];
@@ -145,28 +162,88 @@ export class HistoricalLoadService {
       select: { id: true, supplierSkuCode: true, status: true },
     });
     const skuToId = new Map(variants.map((v) => [v.supplierSkuCode, v.id]));
-    // Historical-load still creates new rows, so the discontinued guard applies
-    // here too: backfilling against a discontinued variant is blocked with the
-    // same message. To load historical data for a discontinued item, reactivate
-    // it, load, then deactivate again (intentional, small friction).
+    // Exact match against a discontinued variant is still blocked: backfilling a
+    // wound-down item needs a deliberate reactivate-load-deactivate (unchanged).
     const discontinuedSkus = new Set(
       variants
         .filter((v) => v.status === ProductStatus.DISCONTINUED)
         .map((v) => v.supplierSkuCode),
     );
+
+    // SKUs with no exact match are auto-create candidates.
+    const unknownSkus = skus.filter((s) => !skuToId.has(s));
+
+    // Similarity gate: each unknown SKU is checked against existing ACTIVE
+    // variants. A near match (likely typo) blocks so the user can choose "use
+    // existing" (fix the SKU) or "create new anyway" (resubmit with
+    // overrideSimilarityCheck=true). The override skips this gate entirely.
+    const similarSkus = new Map<string, SimilarVariantMatch>();
+    // Intra-file near-duplicates: two DIFFERENT unknown SKUs in THIS upload that
+    // are near-identical to each other. The DB gate above only compares against
+    // already-persisted variants, so without this both would auto-create and
+    // mint a typo'd duplicate pair in one shot. Also bypassed by the override.
+    const intraFileSimilarSkus = new Map<string, string>();
+    if (!overrideSimilarityCheck && unknownSkus.length > 0) {
+      const candidates: VariantCandidate[] =
+        await this.prisma.productVariant.findMany({
+          where: { status: ProductStatus.ACTIVE },
+          select: { id: true, supplierSkuCode: true },
+        });
+      for (const s of unknownSkus) {
+        const match = findSimilarVariant(s, candidates);
+        if (match) similarSkus.set(s, match);
+      }
+      // O(n^2) over unknown SKUs only (typically a tiny set); flag each member
+      // of a near-identical pair, pointing at the other.
+      for (let a = 0; a < unknownSkus.length; a++) {
+        for (let b = a + 1; b < unknownSkus.length; b++) {
+          const x = unknownSkus[a];
+          const y = unknownSkus[b];
+          const threshold = x.length > 20 ? 3 : x.length > 10 ? 2 : 1;
+          if (levenshtein(x, y) <= threshold) {
+            if (!intraFileSimilarSkus.has(x)) intraFileSimilarSkus.set(x, y);
+            if (!intraFileSimilarSkus.has(y)) intraFileSimilarSkus.set(y, x);
+          }
+        }
+      }
+    }
+
     rows.forEach((r, i) => {
       if (!r.productVariantSku) return;
-      if (!skuToId.has(r.productVariantSku)) {
+      const sku = r.productVariantSku;
+      const row = csvRowNumber(i);
+      if (skuToId.has(sku)) {
+        if (discontinuedSkus.has(sku)) {
+          errors.push({
+            row,
+            message: discontinuedVariantMessage([sku], 'units'),
+          });
+        }
+        return; // exact ACTIVE match resolves cleanly
+      }
+      const match = similarSkus.get(sku);
+      if (match) {
         errors.push({
-          row: csvRowNumber(i),
-          message: `unknown productVariantSku: ${r.productVariantSku}`,
+          row,
+          message:
+            `SKU "${sku}" is similar to existing variant ` +
+            `"${match.supplierSkuCode}" (id: ${match.id}). Use the existing ` +
+            `variant, create a new one anyway (resubmit with ` +
+            `overrideSimilarityCheck=true), or fix the SKU.`,
         });
-      } else if (discontinuedSkus.has(r.productVariantSku)) {
+        return;
+      }
+      const twin = intraFileSimilarSkus.get(sku);
+      if (twin) {
         errors.push({
-          row: csvRowNumber(i),
-          message: discontinuedVariantMessage([r.productVariantSku], 'units'),
+          row,
+          message:
+            `SKU "${sku}" is near-identical to "${twin}" elsewhere in this ` +
+            `upload and neither exists yet. Fix the typo, or resubmit with ` +
+            `overrideSimilarityCheck=true to create both.`,
         });
       }
+      // otherwise: genuinely new, auto-created on commit
     });
 
     // In-file duplicates.
@@ -199,12 +276,19 @@ export class HistoricalLoadService {
     });
 
     errors.sort((a, b) => a.row - b.row);
+    // SKUs that will be auto-created on commit: unknown, and not held back by a
+    // similarity or intra-file finding. Surfaced so a dry-run shows exactly what
+    // new catalogue entries a commit would mint.
+    const wouldAutoCreate = unknownSkus.filter(
+      (s) => !similarSkus.has(s) && !intraFileSimilarSkus.has(s),
+    );
     const report = {
       shipmentId,
       totalRows: rows.length,
       validRows: rows.length - new Set(errors.map((e) => e.row)).size,
       errorCount: errors.length,
       errors,
+      newVariants: wouldAutoCreate,
     };
 
     if (dryRun) {
@@ -217,6 +301,29 @@ export class HistoricalLoadService {
           'Historical unit load rejected: validation errors. Nothing was written.',
         dryRun: false,
         ...report,
+      });
+    }
+
+    // Auto-create the genuinely-new variants first, in one transaction, so the
+    // skuToId map is complete before unit creation. Each carries its own
+    // auto-create audit row (source=historical-load, sourceEntityId=shipment).
+    // (Cross-batch non-atomicity of the unit load itself is pre-existing and
+    // documented in BACKLOG; a mid-load failure leaves these valid catalogue
+    // rows, which is harmless.)
+    if (wouldAutoCreate.length > 0) {
+      await this.prisma.$transaction(async (tx) => {
+        for (const sku of wouldAutoCreate) {
+          const variant = await createAutoVariant({
+            tx,
+            audit: this.audit,
+            sku,
+            source: 'historical-load',
+            sourceEntityId: shipmentId,
+            actorUserId,
+            similarityChecked: !overrideSimilarityCheck,
+          });
+          skuToId.set(sku, variant.id);
+        }
       });
     }
 
@@ -254,7 +361,13 @@ export class HistoricalLoadService {
         }
       });
     }
-    return { id: shipmentId, dryRun: false, created, totalRows: rows.length };
+    return {
+      id: shipmentId,
+      dryRun: false,
+      created,
+      totalRows: rows.length,
+      autoCreatedVariants: wouldAutoCreate,
+    };
   }
 
   async loadSpareParts(

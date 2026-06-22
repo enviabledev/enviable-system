@@ -4,7 +4,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, PurchaseOrderStatus } from '@prisma/client';
+import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { resolveOrCreateVariant } from '../products/variant-auto-create';
 import { assertVariantsActive } from '../products/variant-status';
 import { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto';
 import { PoLineDto } from './dto/po-line.dto';
@@ -24,7 +26,10 @@ const PO_INCLUDE = {
 
 @Injectable()
 export class PurchaseOrdersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   findAll(query: QueryPurchaseOrdersDto) {
     return this.prisma.purchaseOrder.findMany({
@@ -49,23 +54,19 @@ export class PurchaseOrdersService {
     return po;
   }
 
-  async create(dto: CreatePurchaseOrderDto) {
+  async create(dto: CreatePurchaseOrderDto, actorUserId: string | null) {
     await this.assertSupplierActive(dto.supplierId);
-    await this.assertVariantsExist(dto.lines);
-    // No new PO may be raised for a discontinued variant: issuing fresh
-    // procurement contradicts winding the variant down. Existence is checked
-    // above (400); this gates status (409). Pre-transaction, so the whole PO
-    // fails atomically before any line is written.
-    await assertVariantsActive(
-      this.prisma,
-      dto.lines.map((line) => line.productVariantId),
-      'purchase order lines',
-    );
+    this.assertLineRefsValid(dto.lines);
     const totalValue = this.computeTotal(dto.lines);
 
     return this.prisma.$transaction(async (tx) => {
       const poNumber = await generatePoNumber(tx);
-      return tx.purchaseOrder.create({
+      // Create the PO shell first so auto-created variants can record it as their
+      // source entity, then resolve lines (auto-creating variants for unknown
+      // SKUs), then attach lines. All in one transaction: a discontinued-variant
+      // 409, a similarity 409, or any failure rolls back the PO AND any variant
+      // it would have minted.
+      const po = await tx.purchaseOrder.create({
         data: {
           poNumber,
           supplierId: dto.supplierId,
@@ -76,20 +77,29 @@ export class PurchaseOrdersService {
             ? new Date(dto.expectedShipDate)
             : null,
           paymentTerms: dto.paymentTerms ?? null,
-          lines: {
-            create: dto.lines.map((line) => ({
-              productVariantId: line.productVariantId,
-              quantityOrdered: line.quantityOrdered,
-              unitPrice: new Prisma.Decimal(line.unitPrice),
-            })),
-          },
         },
+      });
+      const resolved = await this.resolveLines(tx, dto.lines, actorUserId, po.id);
+      await tx.purchaseOrderLine.createMany({
+        data: resolved.map((line) => ({
+          purchaseOrderId: po.id,
+          productVariantId: line.productVariantId,
+          quantityOrdered: line.quantityOrdered,
+          unitPrice: new Prisma.Decimal(line.unitPrice),
+        })),
+      });
+      return tx.purchaseOrder.findUniqueOrThrow({
+        where: { id: po.id },
         include: PO_INCLUDE,
       });
     });
   }
 
-  async update(id: string, dto: UpdatePurchaseOrderDto) {
+  async update(
+    id: string,
+    dto: UpdatePurchaseOrderDto,
+    actorUserId: string | null,
+  ) {
     const po = await this.findOne(id);
     assertPoEditable(po.status);
 
@@ -97,14 +107,7 @@ export class PurchaseOrdersService {
       await this.assertSupplierActive(dto.supplierId);
     }
     if (dto.lines) {
-      await this.assertVariantsExist(dto.lines);
-      // Same guard on the line-replacement path: adding/replacing a line for a
-      // discontinued variant on an existing PO is blocked too.
-      await assertVariantsActive(
-        this.prisma,
-        dto.lines.map((line) => line.productVariantId),
-        'purchase order lines',
-      );
+      this.assertLineRefsValid(dto.lines);
     }
     const totalValue = dto.lines
       ? this.computeTotal(dto.lines)
@@ -112,12 +115,19 @@ export class PurchaseOrdersService {
 
     return this.prisma.$transaction(async (tx) => {
       if (dto.lines) {
-        // Replace the line set atomically.
+        // Replace the line set atomically. Resolution (incl. auto-create for
+        // unknown SKUs) and the discontinued guard run inside the same tx.
         await tx.purchaseOrderLine.deleteMany({
           where: { purchaseOrderId: id },
         });
+        const resolved = await this.resolveLines(
+          tx,
+          dto.lines,
+          actorUserId,
+          id,
+        );
         await tx.purchaseOrderLine.createMany({
-          data: dto.lines.map((line) => ({
+          data: resolved.map((line) => ({
             purchaseOrderId: id,
             productVariantId: line.productVariantId,
             quantityOrdered: line.quantityOrdered,
@@ -189,15 +199,85 @@ export class PurchaseOrdersService {
     }
   }
 
-  private async assertVariantsExist(lines: PoLineDto[]): Promise<void> {
-    const variantIds = [...new Set(lines.map((line) => line.productVariantId))];
-    const count = await this.prisma.productVariant.count({
-      where: { id: { in: variantIds } },
-    });
-    if (count !== variantIds.length) {
-      throw new BadRequestException(
-        'One or more productVariantId values are invalid',
-      );
+  /**
+   * Each line must carry EXACTLY ONE of productVariantId / productVariantSku.
+   * Pure shape check (400), run before the transaction.
+   */
+  private assertLineRefsValid(lines: PoLineDto[]): void {
+    for (const line of lines) {
+      const hasId = !!line.productVariantId;
+      const hasSku = !!line.productVariantSku;
+      if (hasId === hasSku) {
+        throw new BadRequestException(
+          'Each PO line must specify exactly one of productVariantId or productVariantSku',
+        );
+      }
     }
+  }
+
+  /**
+   * Resolve every line to a concrete productVariantId inside the transaction:
+   * id lines pass through (existence checked here, 400 on a bad id); SKU lines
+   * go through auto-create (exact match reused, similar match -> 409 unless the
+   * line overrides, otherwise a new variant on the sentinel product). The
+   * discontinued guard then runs across every resolved variant (409). Returns
+   * lines with productVariantId filled in, ready to persist.
+   */
+  private async resolveLines(
+    tx: Prisma.TransactionClient,
+    lines: PoLineDto[],
+    actorUserId: string | null,
+    poId: string,
+  ): Promise<
+    { productVariantId: string; quantityOrdered: number; unitPrice: string }[]
+  > {
+    const resolved: {
+      productVariantId: string;
+      quantityOrdered: number;
+      unitPrice: string;
+    }[] = [];
+    const idProvided: string[] = [];
+    for (const line of lines) {
+      let productVariantId: string;
+      if (line.productVariantId) {
+        productVariantId = line.productVariantId;
+        idProvided.push(productVariantId);
+      } else {
+        const { variant } = await resolveOrCreateVariant({
+          tx,
+          audit: this.audit,
+          sku: line.productVariantSku!,
+          source: 'po-line-create',
+          sourceEntityId: poId,
+          actorUserId,
+          overrideSimilarityCheck: line.overrideSimilarityCheck,
+        });
+        productVariantId = variant.id;
+      }
+      resolved.push({
+        productVariantId,
+        quantityOrdered: line.quantityOrdered,
+        unitPrice: line.unitPrice,
+      });
+    }
+    // Existence for caller-supplied ids (SKU-resolved ids exist by construction).
+    if (idProvided.length > 0) {
+      const ids = [...new Set(idProvided)];
+      const count = await tx.productVariant.count({
+        where: { id: { in: ids } },
+      });
+      if (count !== ids.length) {
+        throw new BadRequestException(
+          'One or more productVariantId values are invalid',
+        );
+      }
+    }
+    // No PO line (new or auto-created) may reference a discontinued variant.
+    await assertVariantsActive(
+      tx,
+      resolved.map((line) => line.productVariantId),
+      'purchase order lines',
+    );
+    return resolved;
   }
 }

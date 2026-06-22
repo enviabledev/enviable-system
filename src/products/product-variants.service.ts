@@ -69,9 +69,22 @@ export class ProductVariantsService {
         'SKU is immutable; deactivate this variant (set status DISCONTINUED) and create a new one if the SKU must change',
       );
     }
+    // Reclassification: validate the target product exists before repointing.
+    // This is how an admin lifts an auto-created variant off the sentinel
+    // "Pending Classification" product onto its real product.
+    if (dto.productId !== undefined) {
+      const product = await this.prisma.product.findUnique({
+        where: { id: dto.productId },
+        select: { id: true },
+      });
+      if (!product) {
+        throw new BadRequestException(`Product ${dto.productId} not found`);
+      }
+    }
     return this.prisma.productVariant.update({
       where: { id },
       data: {
+        ...(dto.productId !== undefined ? { productId: dto.productId } : {}),
         ...(dto.variantAttributes !== undefined
           ? { variantAttributes: dto.variantAttributes }
           : {}),

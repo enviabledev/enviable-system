@@ -1,6 +1,7 @@
 import { Prisma, ProductStatus } from '@prisma/client';
 import {
   IsEnum,
+  IsNotEmpty,
   IsNumberString,
   IsObject,
   IsOptional,
@@ -20,6 +21,15 @@ export class UpdateProductVariantDto {
   @IsOptional()
   @IsString()
   sku?: string;
+
+  // Reclassification: move a variant onto a different product. The primary use
+  // is lifting an auto-created variant off the "Pending Classification" sentinel
+  // product once an admin identifies its real product. Existence is validated in
+  // the service. Unlike the SKU, productId is mutable.
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  productId?: string;
 
   @IsOptional()
   @IsObject()

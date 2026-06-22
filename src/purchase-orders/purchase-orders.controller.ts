@@ -8,7 +8,8 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { Audit, RequirePermissions } from '../common/decorators';
+import { Principal } from '../auth/auth.service';
+import { Audit, CurrentUser, RequirePermissions } from '../common/decorators';
 import { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto';
 import { QueryPurchaseOrdersDto } from './dto/query-purchase-orders.dto';
 import { UpdatePurchaseOrderDto } from './dto/update-purchase-order.dto';
@@ -30,18 +31,25 @@ export class PurchaseOrdersController {
     return this.purchaseOrders.findOne(id);
   }
 
+  // create/update may auto-create a variant for an unknown SKU; the actor is
+  // written into that variant's auto-create audit row (triggeredBy), so the
+  // principal is injected here rather than relied on from the interceptor.
   @Post()
   @RequirePermissions('po.create')
   @Audit('po.create', 'PurchaseOrder')
-  create(@Body() dto: CreatePurchaseOrderDto) {
-    return this.purchaseOrders.create(dto);
+  create(@Body() dto: CreatePurchaseOrderDto, @CurrentUser() actor: Principal) {
+    return this.purchaseOrders.create(dto, actor.id);
   }
 
   @Patch(':id')
   @RequirePermissions('po.create')
   @Audit('po.update', 'PurchaseOrder')
-  update(@Param('id') id: string, @Body() dto: UpdatePurchaseOrderDto) {
-    return this.purchaseOrders.update(id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdatePurchaseOrderDto,
+    @CurrentUser() actor: Principal,
+  ) {
+    return this.purchaseOrders.update(id, dto, actor.id);
   }
 
   // Action POSTs return the row (200, not 201) so the AuditInterceptor sees a

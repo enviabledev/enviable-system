@@ -8,6 +8,91 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
+### Variant auto-create at supply-side entry points (Prompt 37)
+
+Variants now enter the catalogue THROUGH procurement instead of having to be
+pre-seeded. Shared helper `src/products/variant-auto-create.ts` is the single
+source of truth; wired into historical-load units upload and PO line creation.
+Sales side (SO lines, assembly, pricing) preserves reject-on-unknown. Permission
+inherits the source operation (no separate variant-create gate). All 32
+verification probes (A-J incl. reclassify and the structured-409 PO path) green.
+
+Decisions and findings worth carrying:
+
+1. SENTINEL PRODUCT, not nullable columns. `ProductVariant.productId` and
+   `currentMarketPrice` are NON-null in the schema, and neither a CSV row nor a
+   PO line supplies a product or price. Rather than migrate the schema (CLAUDE.md
+   forbids touching prisma/ without explicit instruction; the DB layer is DONE),
+   auto-created variants attach to a seeded sentinel product
+   `seed-product-pending-classification` ("Pending Classification") with
+   `currentMarketPrice = 0`, `variantAttributes = {}`, status ACTIVE. An admin
+   reclassifies later via the variant PATCH (now accepts `productId`).
+
+2. The 0 price is SAFE as a sentinel (checked per the price-assumption probe):
+   no code treats `currentMarketPrice` as a "has been priced" flag, and selling
+   is entirely PriceListEntry-driven (pricing.service never reads market price),
+   so 0 cannot leak into a sale. The ONE arithmetic consumer is the inventory
+   valuation report (`reports.service.ts:112`, `price.mul(inStockCount)`): an
+   unpriced auto-created variant contributes 0 to total market value. That is an
+   honest understatement (unknown market value) and is itself the "needs
+   enrichment" signal, not a bug. If a real go-live wants auto-created stock
+   reflected at some value before admins price it, that is a deliberate decision
+   to make then.
+
+3. No `createdById` column on ProductVariant, so the actor is recorded in the
+   auto-create AUDIT row metadata (`triggeredBy`) instead, alongside `source`,
+   `sourceEntityId`, `sku`, `similarityChecked`. Action `productvariant.autocreate`,
+   entityType `ProductVariant`. The audit row is written in the SAME transaction
+   as the variant (and the source op), so all three commit or roll back together.
+
+4. SHIPMENT RECEIVE does NOT auto-create (case a). Receive resolves the variant
+   from `manifestLine.productVariantId`, which was set at shipment CREATE time
+   from `ManifestLineDto.productVariantId`. No SKU ever enters at receive, so
+   there is nothing to auto-create. The place a new SKU could enter the shipment
+   path is shipment CREATE, but that DTO takes an id and is out of this prompt's
+   scope. To let supply introduce variants via the shipment path, add a SKU
+   option to `ManifestLineDto` and run it through the same helper. Deferred.
+
+For the FRONTEND (prompt 37-frontend) to know:
+
+- PO line: new optional `productVariantSku` (mutually exclusive with
+  `productVariantId`, exactly one per line) plus per-line `overrideSimilarityCheck`.
+  An unknown SKU similar to an existing variant throws a structured 409:
+  `{ kind: 'similar-variant', incomingSku, match: { id, supplierSkuCode, distance,
+  reason }, message }`. Surface "use existing variant X" vs "create new anyway"
+  (resubmit the line with `overrideSimilarityCheck: true`).
+- Historical-load: similarity findings come back as per-row error strings (naming
+  the existing SKU + id), same channel as other row errors; commit is blocked
+  until they are resolved. The override is REQUEST-LEVEL
+  (`?overrideSimilarityCheck=true`), applying to the whole upload, NOT per row.
+  So a file mixing "use existing for row 17" with "create new for row 22" cannot
+  be expressed by one flag: "use existing" is resolved by editing that row's SKU
+  to the exact existing SKU; "create new anyway" needs the request-level override,
+  which would also force-create any OTHER flagged rows. If per-row resolution is
+  wanted, the endpoint needs a per-row decision map (deferred; flag for UX).
+- Dry-run now returns `newVariants` (SKUs a commit would auto-create); commit
+  returns `autoCreatedVariants`. Use these to show "N new variants will be / were
+  created, review them in variant management."
+- Auto-created variants surface in `GET /products` under the "Pending
+  Classification" product, priced 0 with empty attributes. The variant detail
+  should prompt the admin to reclassify (PATCH productId), set attributes, and
+  set a price.
+
+Edge cases handled / flagged:
+
+- INTRA-FILE near-duplicates: two DIFFERENT unknown SKUs in the SAME historical
+  upload that are near-identical to each other (neither matching an existing
+  variant) are detected and flagged as row errors, so one upload cannot mint a
+  typo'd duplicate pair. The DB similarity gate only compares against persisted
+  variants, hence this separate pass. The request-level override bypasses it too.
+- supplierSkuCode still has NO DB unique constraint (pre-existing item, see the
+  33-B uniqueness-hardening note below). Auto-create relies on the app-level
+  exact-match check, so two concurrent uploads of the same brand-new SKU could
+  each create a variant (race -> duplicate). Low risk at single-operator MVP
+  scale; the real fix is the deferred unique index, which auto-create makes more
+  worthwhile. Until then the partial unique index / advisory-lock hardening
+  covers it.
+
 ### Seed variant SKUs aligned to VSK format; production catalog still pending (Prompt 36-followup)
 
 The dev seed's ProductVariant catalog previously used internal short codes
