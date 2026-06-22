@@ -72,7 +72,7 @@ summary and its variants:
     "category": "PASSENGER",
     "manufacturer": { "id": "seed-cp-tvs", "name": "TVS Motor Company Limited", "type": "MANUFACTURER" },
     "variants": [
-      { "id": "seed-var-gs-ecogreen", "supplierSkuCode": "GSP-ECO-GREEN", "variantAttributes": { "model": "GS+", "colour": "Eco Green" }, "currentMarketPrice": "2800000", "status": "ACTIVE" }
+      { "id": "seed-var-gs-gyellow", "supplierSkuCode": "TVS KING GS+ DP CKD EXP10 G YELLOW", "variantAttributes": { "model": "GS+", "colour": "G Yellow" }, "currentMarketPrice": "2800000", "status": "ACTIVE" }
     ]
   }
 ]

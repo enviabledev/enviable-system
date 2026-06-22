@@ -345,6 +345,17 @@ async function main() {
     create: { id: 'seed-prod-zsplus', name: 'TVS King ZS+', manufacturerId: tvs.id, category: 'PASSENGER' },
   });
 
+  // supplierSkuCode carries VSK's SKU exactly as VSK ships it: case, spacing,
+  // and the "+" character preserved, no normalization, no internal short codes.
+  // Historical-load matches CSV "productVariantSku" against this column by exact
+  // string equality, so the seed value must equal the supplier's canonical form
+  // byte for byte.
+  //
+  // Only "TVS KING GS+ DP CKD EXP10 G YELLOW" is a CONFIRMED real VSK SKU (from
+  // the EC List). The other four follow the same VSK naming pattern but are
+  // SEEDED PLACEHOLDERS for end-to-end dev testing (assembly, SO creation,
+  // pricing across multiple variants). Replace every placeholder below with the
+  // actual VSK catalog before any production upload.
   const VARIANTS: {
     id: string;
     productId: string;
@@ -352,11 +363,16 @@ async function main() {
     attrs: Record<string, string>;
     marketPrice: string;
   }[] = [
-    { id: 'seed-var-gs-ecogreen', productId: gsPlus.id, sku: 'GSP-ECO-GREEN', attrs: { model: 'GS+', colour: 'Eco Green' }, marketPrice: '2800000.00' },
-    { id: 'seed-var-gs-nepblue', productId: gsPlus.id, sku: 'GSP-NEP-BLUE', attrs: { model: 'GS+', colour: 'NEP Blue' }, marketPrice: '2800000.00' },
-    { id: 'seed-var-gs-winered', productId: gsPlus.id, sku: 'GSP-NF-WINE-RED', attrs: { model: 'GS+', colour: 'NF Wine Red' }, marketPrice: '2800000.00' },
-    { id: 'seed-var-gs-gyellow', productId: gsPlus.id, sku: 'GSP-G-YELLOW', attrs: { model: 'GS+', colour: 'G Yellow' }, marketPrice: '2800000.00' },
-    { id: 'seed-var-zs-gyellow', productId: zsPlus.id, sku: 'ZSP-G-YELLOW', attrs: { model: 'ZS+', colour: 'G Yellow' }, marketPrice: '3500000.00' },
+    // CONFIRMED real VSK SKU.
+    { id: 'seed-var-gs-gyellow', productId: gsPlus.id, sku: 'TVS KING GS+ DP CKD EXP10 G YELLOW', attrs: { model: 'GS+', colour: 'G Yellow' }, marketPrice: '2800000.00' },
+    // PLACEHOLDER (VSK-format), replace with real VSK SKU before production.
+    { id: 'seed-var-gs-ecogreen', productId: gsPlus.id, sku: 'TVS KING GS+ DP CKD EXP10 ECO GREEN', attrs: { model: 'GS+', colour: 'Eco Green' }, marketPrice: '2800000.00' },
+    // PLACEHOLDER (VSK-format), replace with real VSK SKU before production.
+    { id: 'seed-var-gs-nepblue', productId: gsPlus.id, sku: 'TVS KING GS+ DP CKD EXP10 NEP BLUE', attrs: { model: 'GS+', colour: 'NEP Blue' }, marketPrice: '2800000.00' },
+    // PLACEHOLDER (VSK-format), replace with real VSK SKU before production.
+    { id: 'seed-var-gs-winered', productId: gsPlus.id, sku: 'TVS KING GS+ DP CKD EXP10 NF WINE RED', attrs: { model: 'GS+', colour: 'NF Wine Red' }, marketPrice: '2800000.00' },
+    // PLACEHOLDER (VSK-format), replace with real VSK SKU before production.
+    { id: 'seed-var-zs-gyellow', productId: zsPlus.id, sku: 'TVS KING ZS+ DP CKD EXP10 G YELLOW', attrs: { model: 'ZS+', colour: 'G Yellow' }, marketPrice: '3500000.00' },
   ];
   for (const v of VARIANTS) {
     await prisma.productVariant.upsert({

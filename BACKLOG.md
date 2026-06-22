@@ -8,6 +8,46 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
+### Seed variant SKUs aligned to VSK format; production catalog still pending (Prompt 36-followup)
+
+The dev seed's ProductVariant catalog previously used internal short codes
+(`GSP-ECO-GREEN`, `GSP-G-YELLOW`, `GSP-NEP-BLUE`, `GSP-NF-WINE-RED`,
+`ZSP-G-YELLOW`) that do not match what VSK actually ships under. Real CSV
+uploads against historical-load (exact-match resolution on
+`supplierSkuCode`, no normalization) would fail every row as unknown-SKU.
+
+Fixed: `prisma/seed.ts` now seeds VSK-format codes. Exactly ONE is a CONFIRMED
+real VSK SKU from the EC List: `TVS KING GS+ DP CKD EXP10 G YELLOW`. The other
+four (`... ECO GREEN`, `... NEP BLUE`, `... NF WINE RED`, `TVS KING ZS+ DP CKD
+EXP10 G YELLOW`) follow the same naming pattern but are SEEDED PLACEHOLDERS,
+marked inline. Production deployments MUST replace every placeholder with the
+actual VSK catalog before any real upload. The complete VSK SKU list is
+Theresa-provided and not yet in hand; only the GS+ G YELLOW line is confirmed.
+
+Cross-context surprises surfaced this round (the reason this is logged, not
+just committed):
+
+1. The prompt referenced prior-round artifacts that DO NOT EXIST in this repo:
+   no `sample/` directory, no `sample/README.md` seed-mismatch warning, no
+   historical-load Playwright spec, and no 92-row real CSV. Git was clean at
+   start. The README that actually references the seed SKUs is `src/README.md`
+   (the request-spine walkthrough), updated here to the confirmed SKU. The
+   "flip the Playwright spec green" / Probe B / Probe D steps could not be run
+   as written because those artifacts are absent. Verification was done at the
+   data layer instead (see below). If a historical-load E2E spec + sample CSV
+   are wanted, they still need to be authored.
+
+2. The dev DB carries ~24 leftover `E2E-*` ProductVariant rows (mostly
+   DISCONTINUED) from earlier E2E runs whose specs are not committed. Harmless
+   to this change but they pollute `product_variants`; a clean reseed against a
+   fresh DB would drop them. Left as-is.
+
+Verification performed: `npx prisma db seed` (idempotent, 5 variants), tsc
+--noEmit clean, and the exact service resolution query
+(`supplierSkuCode IN (...)`) confirms the confirmed SKU and placeholders
+resolve to ACTIVE variant ids (so historical-load no longer returns
+unknown-SKU for them). Old `GSP-`/`ZSP-` codes: 0 rows remain.
+
 ### PO-line DISCONTINUED guard: the procurement decision, resolved (Prompt 33-D)
 
 The 33-C open question (block new POs for discontinued variants?) is resolved:
