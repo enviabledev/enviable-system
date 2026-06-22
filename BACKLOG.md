@@ -8,6 +8,30 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
+### Production sentinel + variant SKU realignment migration (Prompt 41)
+
+`prisma/migrations/20260622213814_production_sentinel_and_variant_realignment`
+is a data-only migration (no schema change) that exists for PRODUCTION LAUNCH
+READINESS, not for any dev need. It closes two gaps found by the deploy-readiness
+audit: (1) the auto-create sentinel product `seed-product-pending-classification`
+was added to the dev seed only, so production (deployed without seed-on-deploy)
+lacked it and any auto-create would FK-violate; (2) production still held the 5
+variant rows under their OLD placeholder SKUs because it was never reseeded after
+the 06-22 realignment. The migration INSERTs the sentinel (ON CONFLICT DO NOTHING)
+and UPDATEs the 5 SKUs by id, guarded so already-aligned rows are true no-ops.
+
+Notes for future readers:
+- Idempotent across fresh / already-applied / old-state; verified locally on all
+  three plus a double-run (no-op) and an auto-create FK probe against the
+  post-migration state.
+- The sentinel's `manufacturerId` is deliberately NULL: on a fresh
+  `migrate deploy` this runs BEFORE seed, so the seeded manufacturer does not yet
+  exist and referencing it would FK-violate. The dev seed sets it to seed-cp-tvs;
+  that cosmetic divergence is harmless (the FK only needs the product to exist).
+- SKU UPDATEs bump `updatedAt` because ProductVariant is sync-mirrored; a raw
+  UPDATE that does not advance it is invisible to the offline mirror.
+- Raw SQL bypasses @Audit by design; the migration file is its own trail.
+
 ### Variant auto-create at supply-side entry points (Prompt 37)
 
 Variants now enter the catalogue THROUGH procurement instead of having to be
