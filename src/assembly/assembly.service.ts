@@ -124,6 +124,45 @@ export class AssemblyService {
     });
   }
 
+  /**
+   * Clean cancellation of an in-progress assembly (wrong unit picked,
+   * administrative correction, assembly aborted before any physical work). The
+   * unit returns to IN_WAREHOUSE_CKD intact and the job closes CANCELLED, both
+   * atomically. This intact reversal is coherent ONLY from IN_ASSEMBLY: a
+   * finished CBU cannot be un-built back to a kit, which is why the state
+   * machine has no IN_WAREHOUSE_CBU -> IN_WAREHOUSE_CKD edge. The reversal is a
+   * corrective movement (ADJUSTMENT), referenced to the assembly job; the
+   * reason is carried on the movement notes for the offline timeline and the
+   * audit row. transitionUnit writes the StockMovement in the same transaction,
+   * so Invariant I-3 holds for the reversal automatically.
+   */
+  async cancel(jobId: string, actorId: string, reason: string) {
+    const job = await this.loadInProgressJob(jobId);
+    return this.prisma.$transaction(async (tx) => {
+      await transitionUnit(
+        tx,
+        job.unitId,
+        UnitStatus.IN_WAREHOUSE_CKD,
+        MovementType.ADJUSTMENT,
+        {
+          actorId,
+          referenceType: MovementReferenceType.ASSEMBLY_JOB,
+          referenceId: jobId,
+          notes: reason,
+        },
+      );
+      return tx.assemblyJob.update({
+        where: { id: jobId },
+        data: {
+          status: AssemblyJobStatus.CANCELLED,
+          completedAt: new Date(),
+          notes: reason,
+        },
+        include: JOB_INCLUDE,
+      });
+    });
+  }
+
   findAll() {
     return this.prisma.assemblyJob.findMany({
       orderBy: { createdAt: 'desc' },

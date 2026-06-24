@@ -9,6 +9,7 @@ import {
 import { Principal } from '../auth/auth.service';
 import { Audit, CurrentUser, RequirePermissions } from '../common/decorators';
 import { AssemblyService } from './assembly.service';
+import { CancelAssemblyJobDto } from './dto/cancel-assembly-job.dto';
 import { CreateAssemblyJobsDto } from './dto/create-assembly-jobs.dto';
 
 @Controller('assembly-jobs')
@@ -54,5 +55,19 @@ export class AssemblyController {
   @Audit('assembly.fail', 'AssemblyJob')
   fail(@Param('id') id: string, @CurrentUser() actor: Principal) {
     return this.assembly.fail(id, actor.id);
+  }
+
+  // Clean cancel back to IN_WAREHOUSE_CKD (intact). Requires a reason, threaded
+  // to the reversal movement notes. Same assembly.perform gate as start/fail.
+  @Post(':id/cancel')
+  @HttpCode(200)
+  @RequirePermissions('assembly.perform')
+  @Audit('assembly.cancel', 'AssemblyJob')
+  cancel(
+    @Param('id') id: string,
+    @Body() dto: CancelAssemblyJobDto,
+    @CurrentUser() actor: Principal,
+  ) {
+    return this.assembly.cancel(id, actor.id, dto.reason);
   }
 }

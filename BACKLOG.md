@@ -8,6 +8,34 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
+### Supplier-warranty-claim disposition not modelled (Prompt 44a finding)
+
+A DAMAGED unit can reach write-off (`DAMAGED -> WRITTEN_OFF`) and repair
+(`DAMAGED -> IN_REPAIR -> IN_WAREHOUSE_CKD/CBU`) via the existing adjustment
+map. There is NO supplier-warranty-claim disposition: no unit status, no
+counterparty-claim entity, no movement type for "returned to TVS/VSK under
+warranty." Theresa named it as a downstream choice the warehouse manager should
+have, so it is a real gap, but it is its own feature (a claim record against a
+counterparty, likely with a credit/replacement outcome), not part of the
+assembly-reversal work. Park until a warranty/claims flow is scoped.
+
+### Assembly cancel reuses ADJUSTMENT movement type (Prompt 44a decision)
+
+`AssemblyService.cancel` writes the `IN_ASSEMBLY -> IN_WAREHOUSE_CKD` reversal as
+a `MovementType.ADJUSTMENT`, not a dedicated `ASSEMBLY_CANCEL`. Rationale: the
+enum lives under `prisma/` (guarded against changes without explicit
+instruction), and `fail` set the precedent of reusing the most
+destination-appropriate existing type (`DAMAGE`) rather than minting a
+per-transition type. The movement is self-documenting anyway
+(`fromState=IN_ASSEMBLY`, `toState=IN_WAREHOUSE_CKD`, `referenceType=ASSEMBLY_JOB`,
+`notes=<reason>`). If assembly-throughput reporting later wants to distinguish a
+cancelled assembly from a generic IT-admin adjustment at the movement-type level,
+add an `ASSEMBLY_CANCEL` enum value (one-line schema change + idempotent
+`ADD VALUE IF NOT EXISTS` migration) and switch `cancel` to it. The seed
+description for `assembly.perform` ("Start/complete/fail assembly jobs") is now
+slightly stale (cancel added); left untouched per the prisma/ guardrail, refresh
+it on the next intentional seed edit.
+
 ### Production sentinel + variant SKU realignment migration (Prompt 41)
 
 `prisma/migrations/20260622213814_production_sentinel_and_variant_realignment`
@@ -546,6 +574,33 @@ partial. Documented as a historical artifact; new entries post-fix carry
 beforeState correctly per the convention.
 
 ## Done (this session)
+
+### Assembly cancel: intact reversal IN_ASSEMBLY -> IN_WAREHOUSE_CKD (Prompt 44a)
+
+Audit-first finding rewrote the premise. Of the three reversals 44a asked for,
+two already existed: `IN_ASSEMBLY -> DAMAGED` (`AssemblyService.fail`,
+`POST /assembly-jobs/:id/fail`) and `IN_WAREHOUSE_CBU -> DAMAGED` (the prompt-39
+adjust endpoint, adjustment-map). Only the clean cancel
+(`IN_ASSEMBLY -> IN_WAREHOUSE_CKD`) was missing: legal in the state machine and
+`AssemblyJobStatus.CANCELLED` defined, but no service method or route exposed it.
+
+Added `AssemblyService.cancel(jobId, actorId, reason)` and
+`POST /assembly-jobs/:id/cancel` (DTO with a required, trimmed, non-empty
+`reason` mirroring `AdjustUnitDto`; `assembly.perform` gate; `@Audit(
+'assembly.cancel', 'AssemblyJob')`). It transitions the unit via `transitionUnit`
+so I-3 holds for free (one StockMovement in the same tx), closes the job
+`CANCELLED` with `completedAt`/`notes`, and is rejected on any non-IN_PROGRESS
+job. The reversal lives in the assembly module, not the adjust endpoint, by
+design: the adjustment-map comment excludes `IN_ASSEMBLY` transitions as
+workflow-owned.
+
+Confirmed the #2 domain point is already encoded: the intact-to-CKD edge exists
+ONLY from `IN_ASSEMBLY` (mid-assembly, no work done); `IN_WAREHOUSE_CBU` has no
+edge back to a kit, so a finished tricycle cannot be un-built. No schema change
+(DAMAGED/IN_REPAIR/DAMAGE all pre-existed). Verified by `verify-44a.ts` (23/23
+assertions: clean cancel + movement shape, I-3, fail-path regression,
+cancel-on-CANCELLED/COMPLETED rejection, downstream disposition reachability,
+no-un-build invariant), since deleted.
 
 ### Audit beforeState capture for update and delete actions
 
