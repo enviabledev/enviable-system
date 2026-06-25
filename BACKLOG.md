@@ -8,6 +8,42 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
+### Supplier warranty claim: separate entity, ADJUSTMENT movement, no claim lifecycle yet (Prompt 48a)
+
+Persistence: chose a SEPARATE SupplierWarrantyClaim entity over extending Return.
+Rationale: the prompt anticipates a claim lifecycle (CLAIMED -> APPROVED/DENIED)
+which wants its own status + identity; the claim is a distinct supplier-facing
+artifact FK'd to a Counterparty, 1:1 with the Return; and it keeps Return cohesive.
+No sync cost (returns are not in the offline mirror, so the claim is not either).
+
+MVP scope captured at resolution only: the claim is created with status CLAIMED;
+the downstream VSK outcome (RESOLVED_APPROVED / RESOLVED_DENIED) is NOT wired.
+There is no endpoint to update a claim's status or to set a later-assigned
+claimReference; when VSK responds, the operator drives the UNIT via the adjust
+flow (CLAIMED_TO_SUPPLIER -> SKD/CBU on approval, -> IN_REPAIR/WRITTEN_OFF on
+denial) but the CLAIM row stays CLAIMED. A claim-resolution endpoint that also
+flips the claim status (and records the outcome) is the natural follow-up.
+
+The RETURNED -> CLAIMED_TO_SUPPLIER transition and the downstream
+CLAIMED_TO_SUPPLIER -> assembled-state restock both use MovementType.ADJUSTMENT
+(no dedicated SUPPLIER_CLAIM movement type). Self-documenting via
+fromState/toState/referenceType. If warranty-claim throughput reporting later
+wants a distinct movement type, add SUPPLIER_CLAIM and switch these two edges.
+
+The prompt-40 warranty hook (no-op validity check in resolve()) is untouched:
+this prompt adds the disposition but does NOT check whether a claim is in-warranty.
+
+### Counterparty detail does not surface warranty claims yet (Prompt 48a, Task 7 deferred)
+
+Task 7 (optional) asked whether the counterparty detail should list its warranty
+claims. Deferred: CounterpartiesService.findOne is typed Promise<Counterparty>
+with no includes and is reused by update/delete for existence checks, so adding
+the include would churn that signature across the module for marginal benefit.
+Claims are already reachable via the returns endpoints (which include the
+supplierWarrantyClaim relation) and filterable by supplierCounterpartyId at the
+data layer. A dedicated "claims against this counterparty" view is a clean
+follow-up if Theresa wants the operational rollup for VSK.
+
 ### Cancelled-PI marking: banner-over-watermark, and only CANCELLED is marked (Prompt 47a)
 
 The sales PI surfaces an "ORDER CANCELLED" treatment when the SO is CANCELLED:
@@ -210,7 +246,11 @@ DELETE). The 42a verification left 8 such rows in the dev DB that cannot be
 cleaned up. Harmless (dev only, by design), but worth knowing: any verify run
 that exercises an audited mutation permanently grows the dev audit log.
 
-### Supplier-warranty-claim disposition not modelled (Prompt 44a finding)
+### Supplier-warranty-claim disposition not modelled (Prompt 44a finding) [RESOLVED by 48a]
+
+RESOLVED: prompt 48a added the SUPPLIER_WARRANTY_CLAIM return disposition, the
+CLAIMED_TO_SUPPLIER unit state, and the SupplierWarrantyClaim entity. Original
+44a note retained for history:
 
 A DAMAGED unit can reach write-off (`DAMAGED -> WRITTEN_OFF`) and repair
 (`DAMAGED -> IN_REPAIR -> IN_WAREHOUSE_CKD/CBU`) via the existing adjustment
@@ -776,6 +816,33 @@ partial. Documented as a historical artifact; new entries post-fix carry
 beforeState correctly per the convention.
 
 ## Done (this session)
+
+### Supplier warranty claim return disposition (Prompt 48a)
+
+PRE-DEPLOY: migration `20260625113444_supplier_warranty_claim` adds two enum
+values (ReturnDisposition.SUPPLIER_WARRANTY_CLAIM, UnitStatus.CLAIMED_TO_SUPPLIER),
+a new SupplierWarrantyClaimStatus enum, and the supplier_warranty_claims table.
+Snapshot prod before the auto-deploy. Single migration is PG-safe: no DML uses the
+newly added enum values, and the new table references only the brand-new
+SupplierWarrantyClaimStatus.
+
+- New SupplierWarrantyClaim entity (see Open for the separate-entity rationale):
+  returnId unique, supplierCounterpartyId FK, claimReference?, claimedAt,
+  claimNotes?, status (default CLAIMED).
+- resolve() accepts SUPPLIER_WARRANTY_CLAIM: requires supplierCounterpartyId (400
+  if missing), validates the counterparty exists and is active (400 otherwise),
+  transitions the unit RETURNED -> CLAIMED_TO_SUPPLIER (ADJUSTMENT, I-3 movement),
+  creates the claim, and writes a distinct return.warrantyclaim audit entry, all
+  in one transaction. REPAIR / WRITE_OFF unchanged.
+- State machine + adjustment map: RETURNED -> CLAIMED_TO_SUPPLIER, and from
+  CLAIMED_TO_SUPPLIER to IN_WAREHOUSE_SKD / IN_WAREHOUSE_CBU (approval), IN_REPAIR
+  / WRITTEN_OFF (denial), all via the existing unit adjust flow.
+- Returns list + detail include the supplierWarrantyClaim relation. Reports bucket
+  CLAIMED_TO_SUPPLIER as 'other'. Permission unchanged (return.manage).
+
+Verified by `verify-48a.ts` (27/27, all 17 probes A-Q including the four
+downstream adjust paths, I-3, the distinct audit, and concurrent resolves),
+since deleted.
 
 ### Cancelled-SO marking on the sales PI (Prompt 47a)
 

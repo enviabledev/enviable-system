@@ -4,7 +4,7 @@ import { UnitStatus } from '@prisma/client';
 const S = UnitStatus;
 
 /**
- * The COMPLETE legal unit state transition map. Every one of the 14 states is a
+ * The COMPLETE legal unit state transition map. Every one of the 15 states is a
  * key. This prompt (M3) only exposes the assembly edges as endpoints, but the
  * map is the full domain truth: M4 reuses it for sale (IN_WAREHOUSE_CKD ->
  * SOLD_AS_CKD, IN_WAREHOUSE_CBU -> SOLD_AS_CBU) and return (SOLD_* -> RETURNED,
@@ -104,12 +104,25 @@ export const UNIT_STATE_TRANSITIONS: Record<UnitStatus, UnitStatus[]> = {
   // Transferred to another warehouse: arrives as stock at the destination.
   [S.TRANSFERRED]: [S.IN_WAREHOUSE_CKD, S.IN_WAREHOUSE_SKD, S.IN_WAREHOUSE_CBU],
 
-  // Returned by a customer: inspected then restocked, repaired, or written off.
+  // Returned by a customer: inspected then restocked, repaired, written off, or
+  // claimed against the supplier's warranty.
   [S.RETURNED]: [
     S.IN_WAREHOUSE_CKD,
     S.IN_WAREHOUSE_SKD,
     S.IN_WAREHOUSE_CBU,
     S.DAMAGED,
+    S.IN_REPAIR,
+    S.CLAIMED_TO_SUPPLIER,
+    S.WRITTEN_OFF,
+  ],
+
+  // Claimed against the supplier's warranty, awaiting VSK's resolution. On
+  // approval-with-replacement the unit restocks to its assembled state (SKD for
+  // 3-wheelers, CBU for 2-wheelers); on denial it is repaired internally or
+  // written off. All via the IT-admin adjust flow.
+  [S.CLAIMED_TO_SUPPLIER]: [
+    S.IN_WAREHOUSE_SKD,
+    S.IN_WAREHOUSE_CBU,
     S.IN_REPAIR,
     S.WRITTEN_OFF,
   ],

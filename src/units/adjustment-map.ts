@@ -46,6 +46,18 @@ const ADJUSTMENT_MOVEMENTS: Partial<
     [S.IN_REPAIR]: M.REPAIR_IN,
     [S.WRITTEN_OFF]: M.WRITE_OFF,
   },
+  // Downstream of a supplier warranty claim (VSK's resolution), via the IT-admin
+  // adjust flow. Approval-with-replacement restocks to the assembled state
+  // (ADJUSTMENT, a corrective restock); denial repairs internally (REPAIR_IN) or
+  // writes off (WRITE_OFF). The claim -> assembled state restock uses ADJUSTMENT
+  // rather than a dedicated movement type (no SUPPLIER_CLAIM movement exists;
+  // fromState/toState/referenceType make it self-documenting). See BACKLOG.
+  [S.CLAIMED_TO_SUPPLIER]: {
+    [S.IN_WAREHOUSE_SKD]: M.ADJUSTMENT,
+    [S.IN_WAREHOUSE_CBU]: M.ADJUSTMENT,
+    [S.IN_REPAIR]: M.REPAIR_IN,
+    [S.WRITTEN_OFF]: M.WRITE_OFF,
+  },
   [S.IN_REPAIR]: {
     [S.IN_WAREHOUSE_CKD]: M.RESTOCK_FROM_REPAIR,
     [S.IN_WAREHOUSE_SKD]: M.RESTOCK_FROM_REPAIR,

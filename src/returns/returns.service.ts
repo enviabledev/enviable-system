@@ -5,12 +5,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CounterpartyStatus,
   MovementReferenceType,
   MovementType,
   ReturnDisposition,
   ReturnStatus,
   UnitStatus,
 } from '@prisma/client';
+import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { transitionUnit } from '../units/transition-unit';
 import { InitiateReturnDto } from './dto/initiate-return.dto';
@@ -19,6 +21,7 @@ import { ResolveReturnDto } from './dto/resolve-return.dto';
 const RETURN_INCLUDE = {
   unit: { select: { id: true, engineNumber: true, status: true } },
   salesOrder: { select: { id: true, soNumber: true } },
+  supplierWarrantyClaim: true,
 } as const;
 
 const SOLD_STATES: UnitStatus[] = [
@@ -26,9 +29,18 @@ const SOLD_STATES: UnitStatus[] = [
   UnitStatus.SOLD_AS_CBU,
 ];
 
+const RESOLVE_DISPOSITIONS: ReturnDisposition[] = [
+  ReturnDisposition.REPAIR,
+  ReturnDisposition.WRITE_OFF,
+  ReturnDisposition.SUPPLIER_WARRANTY_CLAIM,
+];
+
 @Injectable()
 export class ReturnsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   findAll() {
     return this.prisma.return.findMany({
@@ -138,17 +150,16 @@ export class ReturnsService {
 
   /**
    * Resolve an inspected return with a disposition. In one transaction:
-   * transition the unit from RETURNED to IN_REPAIR (REPAIR, movement REPAIR_IN)
-   * or WRITTEN_OFF (WRITE_OFF, movement WRITE_OFF) via transitionUnit, and set
-   * the return RESOLVED with the disposition and decider.
+   * transition the unit from RETURNED to its disposition state via transitionUnit
+   * (REPAIR -> IN_REPAIR / REPAIR_IN, WRITE_OFF -> WRITTEN_OFF / WRITE_OFF,
+   * SUPPLIER_WARRANTY_CLAIM -> CLAIMED_TO_SUPPLIER / ADJUSTMENT), set the return
+   * RESOLVED, and for a warranty claim create the SupplierWarrantyClaim and write
+   * a distinct claim audit entry, all atomically.
    */
   async resolve(id: string, dto: ResolveReturnDto, actorId: string) {
-    if (
-      dto.disposition !== ReturnDisposition.REPAIR &&
-      dto.disposition !== ReturnDisposition.WRITE_OFF
-    ) {
+    if (!RESOLVE_DISPOSITIONS.includes(dto.disposition)) {
       throw new BadRequestException(
-        'disposition must be REPAIR or WRITE_OFF',
+        'disposition must be REPAIR, WRITE_OFF, or SUPPLIER_WARRANTY_CLAIM',
       );
     }
     const ret = await this.prisma.return.findUnique({ where: { id } });
@@ -161,19 +172,47 @@ export class ReturnsService {
       );
     }
 
-    // WARRANTY HOOK (deferred): warranty-validity tracking is not implemented
-    // yet (pending Theresa's contractual answers and a future schema change).
-    // When it lands, a warranty-validity check belongs HERE, informing or
-    // constraining the disposition (e.g. in-warranty defects routed to REPAIR
-    // at no charge, out-of-warranty handled differently). Intentionally a no-op
-    // for now; the disposition comes solely from the request.
+    // WARRANTY HOOK (deferred, prompt 40): warranty-validity tracking is not
+    // implemented yet (pending Theresa's contractual answers and a future schema
+    // change). This prompt adds the SUPPLIER_WARRANTY_CLAIM disposition but does
+    // NOT activate the hook: whether a claim is in-warranty is not checked here.
+    // When the hook lands, the validity check belongs HERE, informing or
+    // constraining the disposition. Intentionally a no-op for now.
 
-    const target =
-      dto.disposition === ReturnDisposition.REPAIR
+    const isClaim =
+      dto.disposition === ReturnDisposition.SUPPLIER_WARRANTY_CLAIM;
+
+    // Validate the supplier for a warranty claim BEFORE opening the transaction.
+    if (isClaim) {
+      if (!dto.supplierCounterpartyId) {
+        throw new BadRequestException(
+          'supplierCounterpartyId is required for a SUPPLIER_WARRANTY_CLAIM disposition.',
+        );
+      }
+      const supplier = await this.prisma.counterparty.findFirst({
+        where: { id: dto.supplierCounterpartyId, deletedAt: null },
+        select: { id: true, status: true },
+      });
+      if (!supplier) {
+        throw new BadRequestException(
+          `Counterparty ${dto.supplierCounterpartyId} not found.`,
+        );
+      }
+      if (supplier.status !== CounterpartyStatus.ACTIVE) {
+        throw new BadRequestException(
+          `Counterparty ${dto.supplierCounterpartyId} is not active.`,
+        );
+      }
+    }
+
+    const target = isClaim
+      ? UnitStatus.CLAIMED_TO_SUPPLIER
+      : dto.disposition === ReturnDisposition.REPAIR
         ? UnitStatus.IN_REPAIR
         : UnitStatus.WRITTEN_OFF;
-    const movementType =
-      dto.disposition === ReturnDisposition.REPAIR
+    const movementType = isClaim
+      ? MovementType.ADJUSTMENT
+      : dto.disposition === ReturnDisposition.REPAIR
         ? MovementType.REPAIR_IN
         : MovementType.WRITE_OFF;
 
@@ -183,6 +222,37 @@ export class ReturnsService {
         referenceType: MovementReferenceType.RETURN,
         referenceId: ret.id,
       });
+
+      if (isClaim) {
+        const claim = await tx.supplierWarrantyClaim.create({
+          data: {
+            returnId: ret.id,
+            supplierCounterpartyId: dto.supplierCounterpartyId,
+            claimReference: dto.claimReference ?? null,
+            claimNotes: dto.claimNotes ?? null,
+          },
+        });
+        // Distinct audit entry for the warranty claim, committed atomically with
+        // the resolution (tx-scoped). The return.resolve interceptor entry still
+        // records the disposition on the return.
+        await this.audit.write(
+          {
+            actorUserId: actorId,
+            action: 'return.warrantyclaim',
+            entityType: 'SupplierWarrantyClaim',
+            entityId: claim.id,
+            context: {
+              returnId: ret.id,
+              unitId: ret.unitId,
+              supplierCounterpartyId: dto.supplierCounterpartyId,
+              claimReference: dto.claimReference ?? null,
+              claimNotes: dto.claimNotes ?? null,
+            },
+          },
+          tx,
+        );
+      }
+
       return tx.return.update({
         where: { id },
         data: {

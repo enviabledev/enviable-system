@@ -23,6 +23,7 @@ const STATUS_BUCKET: Record<UnitStatus, Bucket> = {
   [UnitStatus.INTERNAL_USE]: 'other',
   [UnitStatus.TRANSFERRED]: 'other',
   [UnitStatus.RETURNED]: 'other',
+  [UnitStatus.CLAIMED_TO_SUPPLIER]: 'other',
   [UnitStatus.WRITTEN_OFF]: 'other',
 };
 

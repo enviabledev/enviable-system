@@ -156,6 +156,11 @@ enum UnitStatus {
   INTERNAL_USE
   TRANSFERRED
   RETURNED
+  // Returned unit claimed against the supplier's warranty, awaiting VSK's
+  // resolution. From here the unit moves (via the adjust flow) to a sellable
+  // assembled state on approval-with-replacement, or to IN_REPAIR / WRITTEN_OFF
+  // on denial.
+  CLAIMED_TO_SUPPLIER
   WRITTEN_OFF
 }
 
@@ -292,6 +297,19 @@ enum ReturnDisposition {
   PENDING_DECISION
   REPAIR
   WRITE_OFF
+  // The defect is a manufacturing/supplier issue: claim against the supplier's
+  // (VSK) warranty rather than absorb the loss. Captures a SupplierWarrantyClaim
+  // and moves the unit to CLAIMED_TO_SUPPLIER.
+  SUPPLIER_WARRANTY_CLAIM
+}
+
+// Lifecycle of a supplier warranty claim. MVP only sets CLAIMED at resolution;
+// RESOLVED_APPROVED / RESOLVED_DENIED are reserved for the downstream VSK
+// outcome (post-MVP), which the unit-lifecycle adjust flow already supports.
+enum SupplierWarrantyClaimStatus {
+  CLAIMED
+  RESOLVED_APPROVED
+  RESOLVED_DENIED
 }
 
 enum ReturnStatus {
@@ -470,15 +488,16 @@ model Counterparty {
   updatedAt   DateTime           @updatedAt
   deletedAt   DateTime?
 
-  purchaseOrdersAsSupplier PurchaseOrder[]    @relation("PoSupplier")
-  productsAsManufacturer   Product[]          @relation("ProductManufacturer")
-  shipmentsAsForwarder     Shipment[]         @relation("ShipmentForwarder")
-  shipmentsAsClearer       Shipment[]         @relation("ShipmentClearer")
-  shipmentsAsInsurer       Shipment[]         @relation("ShipmentInsurer")
+  purchaseOrdersAsSupplier PurchaseOrder[]         @relation("PoSupplier")
+  productsAsManufacturer   Product[]               @relation("ProductManufacturer")
+  shipmentsAsForwarder     Shipment[]              @relation("ShipmentForwarder")
+  shipmentsAsClearer       Shipment[]              @relation("ShipmentClearer")
+  shipmentsAsInsurer       Shipment[]              @relation("ShipmentInsurer")
   landedCosts              LandedCost[]
   forwarderInvoices        ForwarderInvoice[]
-  lcAsIssuingBank          LetterOfCredit[]   @relation("LcIssuingBank")
-  lcAsBeneficiaryBank      LetterOfCredit[]   @relation("LcBeneficiaryBank")
+  lcAsIssuingBank          LetterOfCredit[]        @relation("LcIssuingBank")
+  lcAsBeneficiaryBank      LetterOfCredit[]        @relation("LcBeneficiaryBank")
+  warrantyClaims           SupplierWarrantyClaim[]
 
   @@index([type])
   @@index([status])
@@ -1209,12 +1228,35 @@ model Return {
   status                 ReturnStatus      @default(INITIATED)
   createdAt              DateTime          @default(now())
 
-  salesOrder SalesOrder @relation(fields: [salesOrderId], references: [id])
-  unit       Unit       @relation(fields: [unitId], references: [id])
+  salesOrder            SalesOrder             @relation(fields: [salesOrderId], references: [id])
+  unit                  Unit                   @relation(fields: [unitId], references: [id])
+  supplierWarrantyClaim SupplierWarrantyClaim?
 
   @@index([salesOrderId])
   @@index([unitId])
   @@map("returns")
+}
+
+// A claim against the supplier's (VSK) warranty, raised when a return is
+// resolved as SUPPLIER_WARRANTY_CLAIM. One per return (returnId unique). The
+// claimReference is nullable because VSK may not assign a ticket number until
+// later. Its own status carries the (post-MVP) VSK outcome; created CLAIMED.
+model SupplierWarrantyClaim {
+  id                     String                      @id @default(cuid())
+  returnId               String                      @unique
+  supplierCounterpartyId String
+  claimReference         String?
+  claimedAt              DateTime                    @default(now())
+  claimNotes             String?
+  status                 SupplierWarrantyClaimStatus @default(CLAIMED)
+  createdAt              DateTime                    @default(now())
+  updatedAt              DateTime                    @updatedAt
+
+  return               Return       @relation(fields: [returnId], references: [id])
+  supplierCounterparty Counterparty @relation(fields: [supplierCounterpartyId], references: [id])
+
+  @@index([supplierCounterpartyId])
+  @@map("supplier_warranty_claims")
 }
 
 // ============================================================================
