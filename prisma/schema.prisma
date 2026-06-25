@@ -246,6 +246,21 @@ enum PaymentStatus {
   REJECTED
 }
 
+// How an overpayment (amount beyond the SO's remaining balance) is to be settled.
+// The system only RECORDS the chosen resolution; it does not process the refund
+// or issue the credit (deliberate: a recording medium so the SO can move past
+// the overpayment). See PaymentsService.record and BACKLOG.
+enum OverpaymentResolution {
+  REFUND
+  CREDIT
+}
+
+// Mechanism for a REFUND-resolved overpayment. Captured for the record only.
+enum RefundMechanism {
+  BANK_TRANSFER
+  CASH
+}
+
 enum PosReconciliationStatus {
   MATCHED
   UNMATCHED
@@ -1016,22 +1031,33 @@ model PaymentMethod {
 }
 
 model Payment {
-  id                 String                    @id @default(cuid())
-  salesOrderId       String
-  paymentMethodId    String
-  amount             Decimal                   @db.Decimal(18, 2)
-  receivedAt         DateTime                  @default(now())
-  referenceNumber    String?
-  confirmationSource PaymentConfirmationSource @default(MANUAL_UPLOAD)
-  confirmedById      String?
-  receiptDocumentId  String?
-  status             PaymentStatus             @default(PENDING)
-  clientId           String?                   @unique
-  createdAt          DateTime                  @default(now())
+  id                    String                    @id @default(cuid())
+  salesOrderId          String
+  paymentMethodId       String
+  amount                Decimal                   @db.Decimal(18, 2)
+  receivedAt            DateTime                  @default(now())
+  referenceNumber       String?
+  confirmationSource    PaymentConfirmationSource @default(MANUAL_UPLOAD)
+  confirmedById         String?
+  receiptDocumentId     String?
+  status                PaymentStatus             @default(PENDING)
+  // Overpayment capture (option a): when this payment's amount exceeds the SO's
+  // remaining balance, the excess and its chosen resolution are recorded here,
+  // 1:1 with the payment that overpaid. All null on a normal (non-overpaying)
+  // payment. The system records intent only; it does not process the refund or
+  // issue the credit. refundMechanism/refundReference apply to REFUND; creditNotes
+  // applies to CREDIT.
+  overpaymentAmount     Decimal?                  @db.Decimal(18, 2)
+  overpaymentResolution OverpaymentResolution?
+  refundMechanism       RefundMechanism?
+  refundReference       String?
+  creditNotes           String?
+  clientId              String?                   @unique
+  createdAt             DateTime                  @default(now())
   // updatedAt for offline-mirror keying. Payments move through PENDING ->
   // CONFIRMED on confirm, and may attach a receiptDocumentId post-creation;
   // both are mutations the mirror must surface.
-  updatedAt          DateTime                  @updatedAt
+  updatedAt             DateTime                  @updatedAt
 
   salesOrder      SalesOrder      @relation(fields: [salesOrderId], references: [id])
   paymentMethod   PaymentMethod   @relation(fields: [paymentMethodId], references: [id])

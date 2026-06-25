@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma } from '@prisma/client';
+import { OverpaymentResolution, PaymentStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { amountInWords } from './amount-in-words';
 import { CompanyProfile, loadCompanyProfile } from './company-profile';
@@ -78,6 +78,8 @@ export class InvoiceDocumentService {
     const salesperson = so.createdBy?.fullName ?? '';
     const customerAddress = this.jsonAddressLines(customer.address);
 
+    const payment = await this.buildPaymentSummary(so.id, invoice.total, currency);
+
     const vatRatePct = invoice.vatRate
       .mul(100)
       .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP)
@@ -123,6 +125,7 @@ export class InvoiceDocumentService {
         vatAmount: formatMoney(invoice.vatAmount, currency),
         grandTotal: formatMoney(invoice.total, currency),
       },
+      payment,
       amountInWords: amountInWords(invoice.total, currency),
       signatories: {
         preparedBy: salesperson ? `Sales Desk · ${salesperson}` : 'Sales Desk',
@@ -221,6 +224,69 @@ export class InvoiceDocumentService {
   }
 
   // ── helpers ────────────────────────────────────────────────────────────────
+
+  /**
+   * Payment summary for the sales invoice. Figures are derived from CONFIRMED
+   * payments only (received money), consistent with the SO's paymentReceivedTotal
+   * derivation. When any confirmed payment carried an overpayment resolution, the
+   * excess and its resolution (Refund + mechanism, or Credit) are surfaced. The
+   * whole block renders only when there is something to show (`has`), so an
+   * invoice issued before any payment is unchanged.
+   */
+  private async buildPaymentSummary(
+    salesOrderId: string,
+    total: Prisma.Decimal,
+    currency: string,
+  ) {
+    const payments = await this.prisma.payment.findMany({
+      where: { salesOrderId, status: PaymentStatus.CONFIRMED },
+    });
+
+    const amountPaid = payments.reduce(
+      (acc, p) => acc.add(p.amount),
+      new Prisma.Decimal(0),
+    );
+    const balanceDue = Prisma.Decimal.max(total.minus(amountPaid), 0);
+
+    const overpaid = payments.filter((p) => p.overpaymentResolution != null);
+    const overpaymentTotal = overpaid.reduce(
+      (acc, p) => acc.add(p.overpaymentAmount ?? new Prisma.Decimal(0)),
+      new Prisma.Decimal(0),
+    );
+
+    let overpayment: {
+      amount: string;
+      resolutionLabel: string;
+      note: string;
+    } | null = null;
+    if (overpaymentTotal.gt(0)) {
+      const labels = [
+        ...new Set(
+          overpaid.map((p) =>
+            p.overpaymentResolution === OverpaymentResolution.REFUND
+              ? `Refund${p.refundMechanism ? ` (${p.refundMechanism.replace(/_/g, ' ')})` : ''}`
+              : 'Credit',
+          ),
+        ),
+      ];
+      const note =
+        overpaid
+          .map((p) => p.refundReference || p.creditNotes || '')
+          .find((n) => n.length > 0) ?? '';
+      overpayment = {
+        amount: formatMoney(overpaymentTotal, currency),
+        resolutionLabel: labels.join(', '),
+        note,
+      };
+    }
+
+    return {
+      has: amountPaid.gt(0) || overpayment != null,
+      amountPaid: formatMoney(amountPaid, currency),
+      balanceDue: formatMoney(balanceDue, currency),
+      overpayment,
+    };
+  }
 
   private companyContext() {
     return {

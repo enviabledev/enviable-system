@@ -8,6 +8,46 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
+### Overpayment detection is against CONFIRMED balance only (Prompt 42a)
+
+`PaymentsService.record` detects overpayment as `amount > (SO.total - sum(CONFIRMED
+payments))`, floored at 0, matching how `confirm`/`cancel` already count money
+(only CONFIRMED payments move the needle; a PENDING payment never does). Two
+consequences the frontend and ops should know:
+- Two separate PENDING payments are each measured against the SAME confirmed
+  remaining, so both can be recorded "within balance" yet together exceed the
+  total. The real overpayment crystallises at confirm time. This is consistent
+  with the existing invariant (only confirmed count) but means the recording-time
+  check is a usability guide, not a hard ledger guarantee. A confirm-time
+  overpayment guard is a separate, larger piece (it would need to decide what to
+  do when the SECOND confirm tips the order over) and is deliberately not in
+  this scope.
+- The resolution (REFUND/CREDIT) is captured at record time on the PENDING
+  payment. If that payment is later REJECTED, the resolution rows ride along on
+  a rejected payment (harmless, but the invoice summary and any future refund
+  worklist should filter to CONFIRMED, as the invoice renderer already does).
+
+### Overpayment is recorded intent, not a processed refund/credit (Prompt 42a)
+
+Per Theresa, the system is a recording medium: it stores WHICH resolution was
+chosen (REFUND + mechanism, or CREDIT + notes) but does not move money or create
+a credit balance the next SO can draw down. There is no refund worklist, no
+credit-note entity, no link from a CREDIT overpayment to a future SO. When a
+real refund/credit workflow is scoped, the captured fields on Payment
+(`overpaymentAmount`, `overpaymentResolution`, `refundMechanism`,
+`refundReference`, `creditNotes`) are the source data to build it from. Note the
+existing `cancel` path's `refundOutstanding` flag is a parallel, separate
+surfacing of refund liability (on cancellation); a unified "money owed back to
+customer" view would consolidate the two.
+
+### Verify scripts leave immutable audit rows in dev (Prompt 42a note)
+
+Exercising the `payment.overpayment` audit-write path against a real DB writes
+to `audit_log_entries`, which is append-only (I-9/I-10, DB trigger blocks
+DELETE). The 42a verification left 8 such rows in the dev DB that cannot be
+cleaned up. Harmless (dev only, by design), but worth knowing: any verify run
+that exercises an audited mutation permanently grows the dev audit log.
+
 ### Supplier-warranty-claim disposition not modelled (Prompt 44a finding)
 
 A DAMAGED unit can reach write-off (`DAMAGED -> WRITTEN_OFF`) and repair
@@ -574,6 +614,40 @@ partial. Documented as a historical artifact; new entries post-fix carry
 beforeState correctly per the convention.
 
 ## Done (this session)
+
+### Overpayment handling at payment recording (Prompt 42a)
+
+Audit-first finding: the prompt's premise (overpayment "produces an unhandled
+error") was inaccurate. `record()` had no balance check and never rejected an
+overpayment; `confirm()` already advances the SO via `received.gte(total)`, so
+there was no stuck state and no error. The real gap was that overpayment was
+accepted silently with no resolution capture (a hanging refund liability).
+
+Implemented detection + resolution capture. **Persistence: option a** (extend
+Payment with nullable `overpaymentAmount`, `overpaymentResolution`,
+`refundMechanism`, `refundReference`, `creditNotes` + two enums
+`OverpaymentResolution`, `RefundMechanism`). Rationale: Theresa's framing makes
+the resolution metadata describing the payment, not a transactional entity with a
+lifecycle; option b (separate entity) implies an out-of-scope reconciliation
+workflow and forces offline-mirror wiring; option c (inverse Payment) pollutes
+the `sum(CONFIRMED)` aggregation `confirm`/`cancel` rely on and models CREDIT
+unnaturally. Option a is 1:1, atomic by construction (one row), no sync changes.
+
+`record()` now computes `remaining = max(total - sum(CONFIRMED), 0)`, flags
+`amount > remaining` as overpayment, and requires `overpaymentResolution` (400
+otherwise); supplying a resolution with no overpayment is also a 400.
+Payment row write + a distinct `payment.overpayment` audit entry commit in one
+`$transaction` (the AuditInterceptor still writes the separate `payment.record`
+entry post-handler). The record handler now injects `@CurrentUser` because the
+in-service audit write needs the actor. Permission unchanged (`payment.record`).
+Migration `20260624235756_payment_overpayment_resolution` (additive nullable
+columns + enums; existing rows untouched).
+
+Sales invoice extended: `buildSalesInvoiceContext` gains a `payment` summary
+(Amount Paid / Balance Due from CONFIRMED payments, plus an Overpayment +
+Resolution row when present); `sales-invoice.hbs` renders it conditionally so an
+invoice with no payments is unchanged. Verified by `verify-42a.ts` (31/31:
+probes A-H plus the partially-paid-SO edge), since deleted.
 
 ### Assembly cancel: intact reversal IN_ASSEMBLY -> IN_WAREHOUSE_CKD (Prompt 44a)
 

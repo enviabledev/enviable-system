@@ -24,11 +24,17 @@ export class PaymentsController {
     return this.payments.listForSo(id);
   }
 
+  // Recording captures the actor because an overpayment writes a distinct
+  // payment.overpayment audit entry from within the service transaction.
   @Post('sales-orders/:id/payments')
   @RequirePermissions('payment.record')
   @Audit('payment.record', 'Payment')
-  record(@Param('id') id: string, @Body() dto: RecordPaymentDto) {
-    return this.payments.record(id, dto);
+  record(
+    @Param('id') id: string,
+    @Body() dto: RecordPaymentDto,
+    @CurrentUser() actor: Principal,
+  ) {
+    return this.payments.record(id, dto, actor.id);
   }
 
   // Confirm writes confirmedById, so it needs the principal.

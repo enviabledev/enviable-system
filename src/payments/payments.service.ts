@@ -6,11 +6,14 @@ import {
 } from '@nestjs/common';
 import {
   CounterpartyStatus,
+  OverpaymentResolution,
   PaymentConfirmationSource,
   PaymentStatus,
   Prisma,
+  RefundMechanism,
   SalesOrderStatus,
 } from '@prisma/client';
+import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RecordPaymentDto } from './dto/record-payment.dto';
 
@@ -20,7 +23,10 @@ const PAYMENT_INCLUDE = {
 
 @Injectable()
 export class PaymentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   listForSo(salesOrderId: string) {
     return this.prisma.payment.findMany({
@@ -33,11 +39,22 @@ export class PaymentsService {
   /**
    * Record a payment in PENDING (manual upload). Does NOT touch the sales order:
    * only a CONFIRMED payment counts toward what the order has received.
+   *
+   * Overpayment is detected here, not rejected: when the amount exceeds the SO's
+   * remaining balance (total minus the sum of CONFIRMED payments, floored at 0
+   * since the order may already be overpaid), the caller MUST supply an
+   * overpaymentResolution (REFUND or CREDIT) or the request is a 400. The excess
+   * and the chosen resolution are stored on the payment row (option a), so the
+   * payment and its resolution are one atomic write. The system records the
+   * resolution; it does not process the refund or issue the credit. A distinct
+   * `payment.overpayment` audit entry is written in the same transaction as the
+   * payment so the two commit or roll back together (the AuditInterceptor writes
+   * the separate `payment.record` entry post-handler).
    */
-  async record(salesOrderId: string, dto: RecordPaymentDto) {
+  async record(salesOrderId: string, dto: RecordPaymentDto, actorId: string) {
     const so = await this.prisma.salesOrder.findFirst({
       where: { id: salesOrderId, deletedAt: null },
-      select: { id: true },
+      select: { id: true, total: true },
     });
     if (!so) {
       throw new NotFoundException(`Sales order ${salesOrderId} not found`);
@@ -60,17 +77,79 @@ export class PaymentsService {
       throw new BadRequestException('amount must be greater than zero');
     }
 
-    return this.prisma.payment.create({
-      data: {
-        salesOrderId,
-        paymentMethodId: dto.paymentMethodId,
-        amount,
-        referenceNumber: dto.referenceNumber ?? null,
-        receiptDocumentId: dto.receiptDocumentId ?? null,
-        confirmationSource: PaymentConfirmationSource.MANUAL_UPLOAD,
-        status: PaymentStatus.PENDING,
-      },
-      include: PAYMENT_INCLUDE,
+    // Remaining balance is derived against CONFIRMED payments only (consistent
+    // with confirm() and cancel()); a pending payment never counts. Floored at 0
+    // so any positive payment on an already-fully-paid order is wholly excess.
+    const agg = await this.prisma.payment.aggregate({
+      _sum: { amount: true },
+      where: { salesOrderId, status: PaymentStatus.CONFIRMED },
+    });
+    const confirmed = agg._sum.amount ?? new Prisma.Decimal(0);
+    const remaining = Prisma.Decimal.max(so.total.minus(confirmed), 0);
+    const isOverpayment = amount.gt(remaining);
+    const overpaymentAmount = isOverpayment ? amount.minus(remaining) : null;
+
+    if (isOverpayment) {
+      if (!dto.overpaymentResolution) {
+        throw new BadRequestException(
+          `Payment of ${amount.toString()} exceeds the remaining balance of ${remaining.toString()} by ${overpaymentAmount!.toString()}. An overpaymentResolution (REFUND or CREDIT) is required to record it.`,
+        );
+      }
+    } else if (dto.overpaymentResolution) {
+      // Resolution supplied where there is no overpayment: reject rather than
+      // store a meaningless resolution on a normal payment.
+      throw new BadRequestException(
+        'overpaymentResolution was provided but the payment does not exceed the remaining balance.',
+      );
+    }
+
+    const isRefund =
+      dto.overpaymentResolution === OverpaymentResolution.REFUND;
+
+    return this.prisma.$transaction(async (tx) => {
+      const payment = await tx.payment.create({
+        data: {
+          salesOrderId,
+          paymentMethodId: dto.paymentMethodId,
+          amount,
+          referenceNumber: dto.referenceNumber ?? null,
+          receiptDocumentId: dto.receiptDocumentId ?? null,
+          confirmationSource: PaymentConfirmationSource.MANUAL_UPLOAD,
+          status: PaymentStatus.PENDING,
+          overpaymentAmount,
+          overpaymentResolution: dto.overpaymentResolution ?? null,
+          refundMechanism: isRefund ? (dto.refundMechanism as RefundMechanism) : null,
+          refundReference: isRefund ? dto.refundReference ?? null : null,
+          creditNotes: isOverpayment && !isRefund ? dto.creditNotes ?? null : null,
+        },
+        include: PAYMENT_INCLUDE,
+      });
+
+      if (isOverpayment) {
+        // Distinct audit entry for the overpayment event and its resolution,
+        // committed atomically with the payment (tx-scoped write).
+        await this.audit.write(
+          {
+            actorUserId: actorId,
+            action: 'payment.overpayment',
+            entityType: 'Payment',
+            entityId: payment.id,
+            context: {
+              salesOrderId,
+              amount: amount.toString(),
+              remainingBalance: remaining.toString(),
+              overpaymentAmount: overpaymentAmount!.toString(),
+              resolution: dto.overpaymentResolution!,
+              refundMechanism: isRefund ? dto.refundMechanism! : null,
+              refundReference: isRefund ? dto.refundReference ?? null : null,
+              creditNotes: !isRefund ? dto.creditNotes ?? null : null,
+            },
+          },
+          tx,
+        );
+      }
+
+      return payment;
     });
   }
 

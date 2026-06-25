@@ -73,6 +73,15 @@
       <div class="tr"><span class="k">Sub-Total</span><span class="v">{{totals.subtotal}}</span></div>
       <div class="tr"><span class="k">{{totals.vatLabel}}</span><span class="v">{{totals.vatAmount}}</span></div>
       <div class="tr grand"><span class="k">Grand Total</span><span class="v">{{totals.grandTotal}}</span></div>
+      {{#if payment.has}}
+      <div class="tr"><span class="k">Amount Paid</span><span class="v">{{payment.amountPaid}}</span></div>
+      <div class="tr"><span class="k">Balance Due</span><span class="v">{{payment.balanceDue}}</span></div>
+      {{#if payment.overpayment}}
+      <div class="tr"><span class="k">Overpayment</span><span class="v">{{payment.overpayment.amount}}</span></div>
+      <div class="tr"><span class="k">Resolution</span><span class="v">{{payment.overpayment.resolutionLabel}}</span></div>
+      {{#if payment.overpayment.note}}<div class="tr"><span class="k">Note</span><span class="v">{{payment.overpayment.note}}</span></div>{{/if}}
+      {{/if}}
+      {{/if}}
     </div>
   </div>
 
