@@ -14,7 +14,7 @@
 // Sales Manager / ED confirm the real figures before go-live.
 // ============================================================================
 
-import { PrismaClient, Prisma } from '@prisma/client';
+import { PrismaClient, Prisma, ProductType } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
@@ -394,17 +394,53 @@ async function main() {
   for (const v of VARIANTS) {
     await prisma.productVariant.upsert({
       where: { id: v.id },
-      update: { supplierSkuCode: v.sku, currentMarketPrice: v.marketPrice },
+      // All five seeded variants are TVS King tricycles: THREE_WHEELER. Set on
+      // update too so a reseed of an existing row aligns with the backfill
+      // migration rather than leaving a stale value.
+      update: {
+        supplierSkuCode: v.sku,
+        currentMarketPrice: v.marketPrice,
+        productType: ProductType.THREE_WHEELER,
+      },
       create: {
         id: v.id,
         productId: v.productId,
         supplierSkuCode: v.sku,
+        productType: ProductType.THREE_WHEELER,
         variantAttributes: v.attrs as Prisma.InputJsonValue,
         currentMarketPrice: v.marketPrice,
       },
     });
   }
   console.log(`  variants: ${VARIANTS.length}`);
+
+  // Placeholder 2-wheeler product + variant for dev/testing of the product-type
+  // flows (single-product-type SOs, bank routing, picker filtering). The SKU and
+  // price are PLACEHOLDERS: replace with the real VSK 2-wheeler catalog before
+  // any production upload, same treatment as the placeholder tricycle variants.
+  const twoWheeler = await prisma.product.upsert({
+    where: { id: 'seed-prod-tvs-2w' },
+    update: { name: 'TVS 2-Wheeler (Placeholder)' },
+    create: {
+      id: 'seed-prod-tvs-2w',
+      name: 'TVS 2-Wheeler (Placeholder)',
+      manufacturerId: tvs.id,
+      category: 'PASSENGER',
+    },
+  });
+  await prisma.productVariant.upsert({
+    where: { id: 'seed-var-2w-placeholder' },
+    update: { productType: ProductType.TWO_WHEELER },
+    create: {
+      id: 'seed-var-2w-placeholder',
+      productId: twoWheeler.id,
+      supplierSkuCode: 'TVS 2W PLACEHOLDER CKD EXP10 BLACK',
+      productType: ProductType.TWO_WHEELER,
+      variantAttributes: { model: '2W-PLACEHOLDER', colour: 'Black' } as Prisma.InputJsonValue,
+      currentMarketPrice: '1200000.00',
+    },
+  });
+  console.log('  variants: +1 placeholder TWO_WHEELER');
 
   // Customer tiers
   const tierStd = await prisma.customerTier.upsert({

@@ -1,5 +1,5 @@
 import { ConflictException } from '@nestjs/common';
-import { Prisma, ProductStatus } from '@prisma/client';
+import { Prisma, ProductStatus, ProductType } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 
 /**
@@ -187,6 +187,13 @@ export async function createAutoVariant(args: {
     data: {
       productId: SENTINEL_PRODUCT_ID,
       supplierSkuCode: sku,
+      // productType defaults to THREE_WHEELER: every supply-side entry point that
+      // auto-creates (historical-load, PO line, shipment receive) deals in TVS
+      // King tricycles today, and the supply flows are deliberately non-blocking
+      // (a CSV row or PO line carries no wheeler-type field to require). An admin
+      // reclassifies the type via PATCH /product-variants/:id alongside lifting
+      // the variant off the "Pending Classification" sentinel product.
+      productType: ProductType.THREE_WHEELER,
       variantAttributes: {},
       currentMarketPrice: new Prisma.Decimal(0),
       status: ProductStatus.ACTIVE,

@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { Audit, RequirePermissions } from '../common/decorators';
 import { CreateProductVariantDto } from './dto/create-product-variant.dto';
+import { QueryProductVariantsDto } from './dto/query-product-variants.dto';
 import { UpdateProductVariantDto } from './dto/update-product-variant.dto';
 import { ProductVariantsService } from './product-variants.service';
 
@@ -16,6 +17,13 @@ import { ProductVariantsService } from './product-variants.service';
 @Controller('product-variants')
 export class ProductVariantsController {
   constructor(private readonly variants: ProductVariantsService) {}
+
+  // Catalogue list with optional ?productType= / ?status= / ?search= filters.
+  @Get()
+  @RequirePermissions('product.read')
+  findAll(@Query() query: QueryProductVariantsDto) {
+    return this.variants.findAll(query);
+  }
 
   @Get(':id')
   @RequirePermissions('product.read')

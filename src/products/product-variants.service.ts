@@ -7,6 +7,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductVariantDto } from './dto/create-product-variant.dto';
+import { QueryProductVariantsDto } from './dto/query-product-variants.dto';
 import { UpdateProductVariantDto } from './dto/update-product-variant.dto';
 
 const VARIANT_VIEW = {
@@ -16,6 +17,25 @@ const VARIANT_VIEW = {
 @Injectable()
 export class ProductVariantsService {
   constructor(private readonly prisma: PrismaService) {}
+
+  /**
+   * Variant catalogue with optional productType / status filtering. The
+   * productType filter backs the product-type-aware pickers (e.g. a sales-order
+   * line picker scoped to the order's established wheeler type).
+   */
+  findAll(query: QueryProductVariantsDto) {
+    return this.prisma.productVariant.findMany({
+      where: {
+        ...(query.productType ? { productType: query.productType } : {}),
+        ...(query.status ? { status: query.status } : {}),
+        ...(query.search
+          ? { supplierSkuCode: { startsWith: query.search } }
+          : {}),
+      },
+      orderBy: { supplierSkuCode: 'asc' },
+      ...VARIANT_VIEW,
+    });
+  }
 
   async findOne(id: string) {
     const variant = await this.prisma.productVariant.findUnique({
@@ -51,6 +71,7 @@ export class ProductVariantsService {
       data: {
         productId: dto.productId,
         supplierSkuCode: dto.supplierSkuCode,
+        productType: dto.productType,
         variantAttributes: dto.variantAttributes,
         currentMarketPrice: new Prisma.Decimal(dto.currentMarketPrice),
         ...(dto.status ? { status: dto.status } : {}),
@@ -85,6 +106,9 @@ export class ProductVariantsService {
       where: { id },
       data: {
         ...(dto.productId !== undefined ? { productId: dto.productId } : {}),
+        ...(dto.productType !== undefined
+          ? { productType: dto.productType }
+          : {}),
         ...(dto.variantAttributes !== undefined
           ? { variantAttributes: dto.variantAttributes }
           : {}),

@@ -82,6 +82,14 @@ export class AssemblyService {
   async complete(jobId: string, actorId: string) {
     const job = await this.loadInProgressJob(jobId);
     return this.prisma.$transaction(async (tx) => {
+      // Both 2-wheeler and 3-wheeler assembly complete to IN_WAREHOUSE_CBU. The
+      // system has no separate SKD/assembled warehouse state distinct from CBU
+      // (the only assembled state IS CBU), so assembly is product-type agnostic
+      // today and 3-wheeler behaviour is unchanged. The future 3-wheeler
+      // SKD-then-CBU split (storefront sales) would introduce a new warehouse
+      // state and branch the target here by the unit variant's productType; it
+      // is explicitly out of scope for now and handled via the unit lifecycle
+      // adjust flow when it lands. See BACKLOG.
       await transitionUnit(
         tx,
         job.unitId,

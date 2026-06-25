@@ -10,6 +10,7 @@ import {
   MovementType,
   PaymentStatus,
   Prisma,
+  ProductType,
   SaleForm,
   SalesChannel,
   SalesOrderStatus,
@@ -96,9 +97,31 @@ interface ResolvedLine {
   productVariantId: string;
   unitId: string;
   saleForm: SaleForm;
+  productType: ProductType;
+  supplierSkuCode: string;
   unitPrice: Prisma.Decimal;
   discountAmount: Prisma.Decimal;
   lineTotal: Prisma.Decimal;
+}
+
+/**
+ * A sales order is single-product-type: every line's variant must be the same
+ * wheeler type (Theresa: SOs are always one product type, enforced at line
+ * addition). There is no incremental add-line endpoint; create and update both
+ * submit the whole line set, so the rule is "the submitted set is uniform". The
+ * first line establishes the order's type (implicit-from-first); any line of the
+ * other type is named and rejected with a 409.
+ */
+function assertSingleProductType(lines: ResolvedLine[]): void {
+  if (lines.length === 0) return;
+  const orderType = lines[0].productType;
+  const offending = lines.find((l) => l.productType !== orderType);
+  if (offending) {
+    throw new ConflictException(
+      `This order is a ${orderType} order. The variant ${offending.supplierSkuCode} ` +
+        `is a ${offending.productType} variant and cannot be added.`,
+    );
+  }
 }
 
 @Injectable()
@@ -575,6 +598,11 @@ export class SalesOrdersService {
     for (const line of lines) {
       const unit = await this.prisma.unit.findUnique({
         where: { id: line.unitId },
+        include: {
+          productVariant: {
+            select: { productType: true, supplierSkuCode: true },
+          },
+        },
       });
       if (!unit) {
         throw new BadRequestException(`Unit ${line.unitId} not found`);
@@ -609,11 +637,15 @@ export class SalesOrdersService {
         productVariantId: line.productVariantId,
         unitId: line.unitId,
         saleForm: line.saleForm,
+        productType: unit.productVariant.productType,
+        supplierSkuCode: unit.productVariant.supplierSkuCode,
         unitPrice,
         discountAmount,
         lineTotal: unitPrice.sub(discountAmount),
       });
     }
+    // A sales order is single-product-type: reject a mixed-wheeler-type set.
+    assertSingleProductType(resolved);
     // A discontinued variant cannot be sold anew (covers both create and the
     // line-replacement path). Existing SO lines are untouched: this gates only
     // the lines being resolved for a new/edited order.

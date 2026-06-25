@@ -1,4 +1,4 @@
-import { Prisma, ProductStatus } from '@prisma/client';
+import { Prisma, ProductStatus, ProductType } from '@prisma/client';
 import {
   IsEnum,
   IsNotEmpty,
@@ -18,6 +18,13 @@ export class CreateProductVariantDto {
   @IsString()
   @IsNotEmpty()
   supplierSkuCode!: string;
+
+  // Wheeler type, intrinsic to the variant. Required and explicit: there is no
+  // default, so the caller must classify the variant as a 2- or 3-wheeler.
+  @IsEnum(ProductType, {
+    message: 'productType must be TWO_WHEELER or THREE_WHEELER',
+  })
+  productType!: ProductType;
 
   // Structured attributes (e.g. { model, colour }); a free-form JSON object.
   @IsObject()

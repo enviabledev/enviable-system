@@ -1,4 +1,4 @@
-import { Prisma, ProductStatus } from '@prisma/client';
+import { Prisma, ProductStatus, ProductType } from '@prisma/client';
 import {
   IsEnum,
   IsNotEmpty,
@@ -30,6 +30,15 @@ export class UpdateProductVariantDto {
   @IsString()
   @IsNotEmpty()
   productId?: string;
+
+  // Reclassification of wheeler type (e.g. correcting an auto-created variant
+  // that defaulted to THREE_WHEELER). Allowed; it does NOT retro-validate
+  // existing sales orders that already reference the variant (see BACKLOG).
+  @IsOptional()
+  @IsEnum(ProductType, {
+    message: 'productType must be TWO_WHEELER or THREE_WHEELER',
+  })
+  productType?: ProductType;
 
   @IsOptional()
   @IsObject()

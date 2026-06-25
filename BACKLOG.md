@@ -8,6 +8,63 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
+### No SKD warehouse state; assembly is product-type agnostic (Prompt 45a finding + decision)
+
+Prompt 45a's Task 4 assumed a 3-wheeler "SKD/assembled" state distinct from CBU.
+It does not exist: `UnitStatus` has CKD, IN_ASSEMBLY (transient), and CBU only;
+`AssemblyService.complete` transitions every unit to IN_WAREHOUSE_CBU. So both
+2- and 3-wheeler assembly complete to CBU, and 3-wheeler behaviour is unchanged.
+Introducing a real SKD state would break the existing CBU-based sales/release
+flow (a hard "unchanged" constraint), and the prompt itself scopes the 3-wheeler
+SKD-to-CBU split OUT ("future store-front sales... not in this prompt's scope").
+Decision: NO new state; assembly stays type-agnostic; documented with a comment
+in `assembly.service.ts complete()`. When storefront sales lands, add the SKD
+warehouse state and branch the completion target there by the variant's
+productType (3-wheeler -> SKD, then SKD -> CBU via the unit adjust flow).
+
+### SO product-type model: implicit-from-first / uniform-set (Prompt 45a decision)
+
+A sales order is single-product-type, enforced as "every line in a submitted set
+shares one wheeler type" (the first line establishes it; a mismatched line is
+named and rejected 409). NO productType column on SalesOrder. Rationale: there is
+no incremental add-line endpoint, so `create` and `update` each submit the whole
+set atomically and `assertSingleProductType` validates it inside `resolveLines`;
+adding an SO column would duplicate state derivable from the lines. Consequence
+for the frontend (45b): the order type is `lines[0].productVariant.productType`
+(or none for an empty order); the line picker should filter to that type once the
+first line exists. The 409 message is the contract: "This order is a {TYPE}
+order. The variant {SKU} is a {other} variant and cannot be added."
+
+### Variant productType change does not retro-validate orders (Prompt 45a)
+
+`PATCH /product-variants/:id` may change `productType` (the reclassification use
+case: correcting an auto-created variant). It does NOT re-check sales orders that
+already reference the variant, so in theory an existing SO could become mixed-type
+retroactively. Accepted for MVP (reclassification is rare and pre-payment; the
+enforcement is at line-add time). A cascading re-validation or a block-when-
+referenced rule is deferred.
+
+### Auto-create defaults productType to THREE_WHEELER (Prompt 45a decision)
+
+Supply-side auto-create (historical-load, PO line, shipment receive) sets
+`productType = THREE_WHEELER`. Rationale: all real supply today is TVS King
+tricycles, and those entry points are deliberately non-blocking (a CSV row / PO
+line carries no wheeler-type field to require). The variant lands on the
+"Pending Classification" sentinel product; an admin reclassifies BOTH product and
+type via PATCH. 2-wheeler variants are created explicitly. If 2-wheeler supply
+ever arrives via auto-create, it will be mis-typed until reclassified (same
+"needs classification" caveat the sentinel already carries).
+
+### Bank details model: config keyed by wheeler type, placeholder 2W (Prompt 45a)
+
+Enviable's bank accounts live in `CompanyProfile` (config), now TWO accounts
+keyed by ProductType: `INVOICE_BANK_3W_*` and `INVOICE_BANK_2W_*` (NAME /
+ACCOUNT_NAME / ACCOUNT_NUMBER / SORT_CODE each). The 3-wheeler defaults are the
+prior real Zenith values; the 2-wheeler account is a PLACEHOLDER
+(account 0000000000) that Theresa must replace via env before launch. Customer
+documents (sales PI + sales invoice) route to the account for the SO's product
+type via `bankForLines`. No DB company-profile table yet (still deferred).
+
 ### Procurement-side PI PDF is RETAINED, not retired (Prompt 43a decision)
 
 43a Task 7 asked whether the procurement-side "View PDF / Print PI" affordance
@@ -660,6 +717,36 @@ partial. Documented as a historical artifact; new entries post-fix carry
 beforeState correctly per the convention.
 
 ## Done (this session)
+
+### 2-wheeler / 3-wheeler product type integration (Prompt 45a)
+
+PRE-DEPLOY: migration `20260625024147_product_variant_product_type` alters
+`product_variants` (add nullable -> backfill THREE_WHEELER -> set NOT NULL).
+Snapshot the production DB before the CI auto-deploy runs it (established
+pre-deploy pattern). The backfill is data-touching but additive and reversible
+by dropping the column + enum; it sets EVERY existing variant (the 5 seeded TVS
+King variants plus any sentinel-attached auto-created variants) to THREE_WHEELER.
+
+- Schema: `ProductType { TWO_WHEELER, THREE_WHEELER }` enum + required
+  `productType` on ProductVariant.
+- DTOs: create requires productType (400 if missing); update may change it
+  (reclassification, non-cascading, see Open).
+- Auto-create: defaults THREE_WHEELER (see Open).
+- SO single-product-type: `assertSingleProductType` in `resolveLines` rejects a
+  mixed set with a named 409 (implicit-from-first model, see Open).
+- Assembly: unchanged, both types complete to CBU (no SKD state, see Open).
+- Bank routing: two config-keyed accounts; sales PI + sales invoice route by the
+  SO's product type via `bankForLines` (see Open).
+- Pickers: `GET /api/product-variants?productType=&status=&search=` (new list
+  endpoint); units list gains a `productType` filter (via the variant relation).
+- Seed: the 5 variants set THREE_WHEELER explicitly; one placeholder TWO_WHEELER
+  variant + product added for dev/testing.
+
+Verified by `verify-45a.ts` (30/30, all 24 probes A-X including a real PDF-path
+render, assembly for both types, bank routing on both documents, and concurrent
+mixed-vs-uniform rejection), since deleted. Probe A "fresh DB" path is covered by
+construction (the backfill UPDATE touches zero rows on an empty table); dev/prod
+backfill verified live.
 
 ### Sales-side proforma invoice, auto-issued on SO creation (Prompt 43a)
 

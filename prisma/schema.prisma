@@ -131,6 +131,14 @@ enum ProductStatus {
   DISCONTINUED
 }
 
+// Wheeler type, intrinsic to a variant. Drives single-product-type sales orders
+// and bank routing on customer documents. All currently seeded variants (TVS
+// King tricycles) are THREE_WHEELER; the backfill migration sets them so.
+enum ProductType {
+  TWO_WHEELER
+  THREE_WHEELER
+}
+
 enum UnitStatus {
   IN_TRANSIT
   IN_WAREHOUSE_CKD
@@ -711,6 +719,7 @@ model ProductVariant {
   productId          String
   variantAttributes  Json
   supplierSkuCode    String
+  productType        ProductType
   currentMarketPrice Decimal       @db.Decimal(18, 2)
   status             ProductStatus @default(ACTIVE)
   createdAt          DateTime      @default(now())

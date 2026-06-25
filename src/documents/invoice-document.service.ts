@@ -1,9 +1,14 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { OverpaymentResolution, PaymentStatus, Prisma } from '@prisma/client';
+import {
+  OverpaymentResolution,
+  PaymentStatus,
+  Prisma,
+  ProductType,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { amountInWords } from './amount-in-words';
-import { CompanyProfile, loadCompanyProfile } from './company-profile';
+import { BankAccount, CompanyProfile, loadCompanyProfile } from './company-profile';
 import {
   addDays,
   addressHtml,
@@ -137,7 +142,7 @@ export class InvoiceDocumentService {
         stamp: 'Goods once sold are not eligible for return or exchange.',
         note: 'This is a system-generated invoice and is valid without signature.',
       },
-      bank: { name: this.company.bankName, account: this.company.bankAccount },
+      bank: this.bankContext(this.bankForLines(so.lines)),
     };
   }
 
@@ -223,7 +228,7 @@ export class InvoiceDocumentService {
       lines,
       totals: { rows: totalRows, grandTotal: formatMoney(so.total, currency) },
       amountInWords: amountInWords(so.total, currency),
-      payment: { html: this.salesProformaPaymentHtml() },
+      payment: { html: this.salesProformaPaymentHtml(this.bankForLines(so.lines)) },
       authorisation: pi.issuedBy
         ? `Issued: ${pi.issuedBy.fullName} · ${formatDate(pi.issuedAt)}`
         : `Issued: ${formatDate(pi.issuedAt)}`,
@@ -380,6 +385,27 @@ export class InvoiceDocumentService {
     };
   }
 
+  /**
+   * Route to Enviable's bank account for the order's wheeler type. A sales order
+   * is single-product-type, so the first line's variant type determines it;
+   * defaults to THREE_WHEELER for an empty line set (defensive).
+   */
+  private bankForLines(
+    lines: Array<{ productVariant: { productType: ProductType } }>,
+  ): BankAccount {
+    const type = lines[0]?.productVariant.productType ?? ProductType.THREE_WHEELER;
+    return this.company.banks[type];
+  }
+
+  private bankContext(bank: BankAccount) {
+    return {
+      name: bank.bankName,
+      accountName: bank.accountName,
+      accountNumber: bank.accountNumber,
+      sortCode: bank.sortCode,
+    };
+  }
+
   private companyContext() {
     return {
       name: this.company.name,
@@ -478,14 +504,16 @@ export class InvoiceDocumentService {
   }
 
   /**
-   * Payment box for the sales-side PI: Enviable's own bank for the customer to
-   * pay into, plus a payment instruction. Single bank for now; per-product-type
-   * bank routing (2-wheeler vs 3-wheeler) is deferred to a later integration.
+   * Payment box for the sales-side PI: Enviable's bank for the customer to pay
+   * into, plus a payment instruction. The account is routed by the sales order's
+   * wheeler type (one account per type); the caller resolves it via bankForLines.
    */
-  private salesProformaPaymentHtml(): string {
+  private salesProformaPaymentHtml(bank: BankAccount): string {
     return [
-      `<b>${this.escape(this.company.bankName)}</b>`,
-      `Account: ${this.escape(this.company.bankAccount)}`,
+      `<b>${this.escape(bank.bankName)}</b>`,
+      `Account Name: ${this.escape(bank.accountName)}`,
+      `Account Number: ${this.escape(bank.accountNumber)}`,
+      `Sort Code: ${this.escape(bank.sortCode)}`,
       'Please quote the PI number on your transfer and send proof of payment to confirm your order.',
     ].join('<br/>');
   }

@@ -1,5 +1,5 @@
 import { Transform, Type } from 'class-transformer';
-import { UnitStatus } from '@prisma/client';
+import { ProductType, UnitStatus } from '@prisma/client';
 import {
   IsArray,
   IsEnum,
@@ -49,6 +49,13 @@ export class QueryUnitsDto {
   @IsOptional()
   @IsString()
   warehouseId?: string;
+
+  // Filter units by their variant's wheeler type (via the variant relation).
+  @IsOptional()
+  @IsEnum(ProductType, {
+    message: 'productType must be TWO_WHEELER or THREE_WHEELER',
+  })
+  productType?: ProductType;
 
   @IsOptional()
   @IsISO8601()

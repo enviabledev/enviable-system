@@ -42,6 +42,9 @@ export class UnitsService {
     if (query.warehouseId) {
       where.currentWarehouseId = query.warehouseId;
     }
+    if (query.productType) {
+      where.productVariant = { productType: query.productType };
+    }
     // NOTE: createdAt is the received-date proxy. For historical imports it is
     // the import time, not the real arrival date (a known limitation: the
     // workflow timestamps were never captured for pre-system arrivals).
