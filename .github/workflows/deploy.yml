@@ -68,7 +68,8 @@ jobs:
               "# BACKEND_IMAGE is interpolated from .env; cwd must remain /opt/enviable so Compose auto-loads /opt/enviable/.env",
               "docker compose -f /opt/enviable/docker-compose.yml pull",
               "docker compose -f /opt/enviable/docker-compose.yml up -d",
-              "docker image prune -f"
+              "# -a is required: each deploy tags a fresh enviable-backend:<sha> image, which is NOT dangling, so plain `prune -f` never reclaimed them. They accumulated (~1.35GB each) until the 20G box hit 100% and `compose pull` failed with ENOSPC, silently stalling CD for 3 days (incident 2026-06-25). `prune -af` removes all images not used by a running container (old backend SHAs), keeping caddy/redis and the just-started backend.",
+              "docker image prune -af"
             ]' \
             --query "Command.CommandId" --output text)
           echo "Command: $CMD_ID"
