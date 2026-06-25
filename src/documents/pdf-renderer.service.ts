@@ -55,6 +55,14 @@ export class PdfRendererService implements OnModuleDestroy {
     return { filename: ctx.filename, html: this.engine.renderProformaInvoice(ctx) };
   }
 
+  async renderSalesProformaInvoiceHtml(salesPiId: string): Promise<RenderedHtml> {
+    const ctx = await this.documents.buildSalesProformaInvoiceContext(salesPiId);
+    return {
+      filename: ctx.filename,
+      html: this.engine.renderSalesProformaInvoice(ctx),
+    };
+  }
+
   // ── PDF (rendered from the exact same HTML) ─────────────────────────────────
 
   async renderSalesInvoicePdf(invoiceId: string): Promise<RenderedPdf> {
@@ -64,6 +72,11 @@ export class PdfRendererService implements OnModuleDestroy {
 
   async renderProformaInvoicePdf(proformaId: string): Promise<RenderedPdf> {
     const { filename, html } = await this.renderProformaInvoiceHtml(proformaId);
+    return { filename, pdf: await this.htmlToPdf(html) };
+  }
+
+  async renderSalesProformaInvoicePdf(salesPiId: string): Promise<RenderedPdf> {
+    const { filename, html } = await this.renderSalesProformaInvoiceHtml(salesPiId);
     return { filename, pdf: await this.htmlToPdf(html) };
   }
 

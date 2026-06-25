@@ -16,10 +16,12 @@ import {
   UnitStatus,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
 import { isUniqueViolationOn } from '../common/prisma-errors';
 import { assertVariantsActive } from '../products/variant-status';
 import { transitionUnit } from '../units/transition-unit';
 import { PricingService } from '../pricing/pricing.service';
+import { generateSalesPiNumber } from '../sales-proforma-invoices/sales-pi-number';
 import { CreateSalesOrderDto } from './dto/create-sales-order.dto';
 import { QuerySalesOrdersDto } from './dto/query-sales-orders.dto';
 import { SoLineDto } from './dto/so-line.dto';
@@ -49,6 +51,11 @@ const SO_DETAIL_INCLUDE = {
       unit: { select: { id: true, engineNumber: true, status: true } },
       productVariant: { select: { id: true, supplierSkuCode: true } },
     },
+  },
+  // The auto-issued sales-side proforma invoice, so the frontend can surface a
+  // "View PI" affordance without a second fetch.
+  salesProformaInvoice: {
+    select: { id: true, piNumber: true, issuedAt: true },
   },
 } as const;
 
@@ -99,6 +106,7 @@ export class SalesOrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly pricing: PricingService,
+    private readonly audit: AuditService,
   ) {}
 
   findAll(query: QuerySalesOrdersDto) {
@@ -112,6 +120,9 @@ export class SalesOrdersService {
       orderBy: { createdAt: 'desc' },
       include: {
         customer: { select: { id: true, name: true } },
+        salesProformaInvoice: {
+          select: { id: true, piNumber: true, issuedAt: true },
+        },
         _count: { select: { lines: true } },
       },
     });
@@ -155,7 +166,7 @@ export class SalesOrdersService {
     try {
       return await this.prisma.$transaction(async (tx) => {
         const soNumber = await generateSoNumber(tx);
-        return tx.salesOrder.create({
+        const created = await tx.salesOrder.create({
           data: {
             soNumber,
             customerId: dto.customerId,
@@ -168,6 +179,34 @@ export class SalesOrdersService {
             total: totals.total,
             lines: { create: lines.map(toLineCreate) },
           },
+          select: { id: true },
+        });
+
+        // Auto-issue the customer-facing proforma invoice in the SAME
+        // transaction: one PI per SO, atomic with SO creation (if this fails the
+        // SO rolls back, leaving no orphan). issuedById is the SO creator.
+        const piNumber = await generateSalesPiNumber(tx);
+        const pi = await tx.salesProformaInvoice.create({
+          data: { piNumber, salesOrderId: created.id, issuedById: actorId },
+          select: { id: true, piNumber: true },
+        });
+        await this.audit.write(
+          {
+            actorUserId: actorId,
+            action: 'salesproformainvoice.issue',
+            entityType: 'SalesProformaInvoice',
+            entityId: pi.id,
+            context: {
+              soId: created.id,
+              piNumber: pi.piNumber,
+              customerId: dto.customerId,
+            },
+          },
+          tx,
+        );
+
+        return tx.salesOrder.findUniqueOrThrow({
+          where: { id: created.id },
           include: SO_DETAIL_INCLUDE,
         });
       });

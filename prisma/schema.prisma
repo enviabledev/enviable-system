@@ -361,6 +361,7 @@ model User {
   createdSalesOrders    SalesOrder[]           @relation("SalesOrderCreatedBy")
   cancelledSalesOrders  SalesOrder[]           @relation("SalesOrderCancelledBy")
   approvedProformas     ProformaInvoice[]      @relation("ProformaApprovedBy")
+  issuedSalesProformas  SalesProformaInvoice[] @relation("SalesProformaIssuedBy")
   assembledUnits        Unit[]                 @relation("UnitAssembledBy")
   supervisedJobs        AssemblyJob[]          @relation("AssemblyJobSupervisor")
   movementsActed        StockMovement[]        @relation("MovementActor")
@@ -956,6 +957,7 @@ model SalesOrder {
   cancelledBy          User?                 @relation("SalesOrderCancelledBy", fields: [cancelledById], references: [id])
   lines                SalesOrderLine[]
   invoice              Invoice?
+  salesProformaInvoice SalesProformaInvoice?
   payments             Payment[]
   releaseAuthorisation ReleaseAuthorisation?
   deliveryNote         DeliveryNote?
@@ -1009,6 +1011,28 @@ model Invoice {
   pdfDocument Document?  @relation(fields: [pdfDocumentId], references: [id])
 
   @@map("invoices")
+}
+
+// Sales-side proforma invoice (Enviable -> customer), distinct from the
+// procurement-side ProformaInvoice (VSK -> Enviable, recorded against a PO).
+// Auto-issued in the same transaction as the SalesOrder it documents: one PI per
+// SO (salesOrderId unique). piNumber is a separate sequence (PI-YYYY-NNNN),
+// globally unique, allocated by generateSalesPiNumber. Rendered customer-facing
+// via the Direction C branded-band template bound to sales data. Re-issuance on
+// SO edit is deferred (post-MVP); for now the PI snapshots the SO at creation.
+model SalesProformaInvoice {
+  id           String   @id @default(cuid())
+  piNumber     String   @unique
+  salesOrderId String   @unique
+  issuedAt     DateTime @default(now())
+  issuedById   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  salesOrder SalesOrder @relation(fields: [salesOrderId], references: [id])
+  issuedBy   User?      @relation("SalesProformaIssuedBy", fields: [issuedById], references: [id])
+
+  @@map("sales_proforma_invoices")
 }
 
 model PaymentMethod {

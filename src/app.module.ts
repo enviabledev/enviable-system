@@ -21,6 +21,7 @@ import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
 import { ReportsModule } from './reports/reports.module';
 import { ReturnsModule } from './returns/returns.module';
 import { SalesOrdersModule } from './sales-orders/sales-orders.module';
+import { SalesProformaInvoicesModule } from './sales-proforma-invoices/sales-proforma-invoices.module';
 import { ShipmentsModule } from './shipments/shipments.module';
 import { SparePartsModule } from './spare-parts/spare-parts.module';
 import { StockMovementsModule } from './stock-movements/stock-movements.module';
@@ -48,6 +49,7 @@ import { UsersModule } from './users/users.module';
     CustomersModule,
     PricingModule,
     SalesOrdersModule,
+    SalesProformaInvoicesModule,
     PaymentsModule,
     ReturnsModule,
     ReportsModule,

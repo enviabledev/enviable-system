@@ -14,6 +14,7 @@ import * as Handlebars from 'handlebars';
 export class InvoiceTemplateEngine {
   private readonly salesTemplate: HandlebarsTemplateDelegate;
   private readonly proformaTemplate: HandlebarsTemplateDelegate;
+  private readonly salesProformaTemplate: HandlebarsTemplateDelegate;
   /** Constant `<style>...</style>` block: @font-face (base64) + shared stylesheet. */
   private readonly styleBlock: string;
   /** Constant logo as a data URI. */
@@ -45,6 +46,10 @@ export class InvoiceTemplateEngine {
       readFileSync(join(templatesDir, 'proforma-invoice.hbs'), 'utf8'),
       { noEscape: false },
     );
+    this.salesProformaTemplate = Handlebars.compile(
+      readFileSync(join(templatesDir, 'sales-proforma-invoice.hbs'), 'utf8'),
+      { noEscape: false },
+    );
   }
 
   private withConstants<T extends object>(context: T): T & { styleBlock: string; logoDataUri: string } {
@@ -57,5 +62,9 @@ export class InvoiceTemplateEngine {
 
   renderProformaInvoice(context: object): string {
     return this.proformaTemplate(this.withConstants(context));
+  }
+
+  renderSalesProformaInvoice(context: object): string {
+    return this.salesProformaTemplate(this.withConstants(context));
   }
 }

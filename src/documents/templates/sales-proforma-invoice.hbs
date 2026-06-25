@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>{{doc.piNumber}}</title>
+{{{styleBlock}}}
+</head>
+<body>
+<div class="inv c">
+  <div class="c-band">
+    <div class="c-band-top">
+      <div class="c-logochip"><img src="{{logoDataUri}}" alt="{{company.name}}" /></div>
+      <div class="c-word">PROFORMA<span class="small">{{doc.piNumber}}</span></div>
+    </div>
+    <div class="c-band-meta">
+      <div><div class="k">Issue Date</div><div class="v">{{doc.issueDate}}</div></div>
+      <div><div class="k">Sales Order</div><div class="v">{{doc.salesOrder}}</div></div>
+      <div><div class="k">Total</div><div class="v">{{doc.totalValue}}</div></div>
+    </div>
+  </div>
+
+  <div class="c-body">
+    <div class="c-parties">
+      <div class="c-party">
+        <div class="c-cap">From</div>
+        <div class="pnm">{{from.name}}</div>
+        <div class="padr">{{{from.addressHtml}}}</div>
+      </div>
+      <div class="c-party">
+        <div class="c-cap">Bill To</div>
+        <div class="pnm">{{billTo.name}}</div>
+        <div class="padr">{{{billTo.addressHtml}}}</div>
+      </div>
+    </div>
+
+    <table class="c-lines">
+      <thead>
+        <tr>
+          <th style="width:30px">#</th>
+          <th>Product Description</th>
+          <th style="width:50px" class="c">UOM</th>
+          <th style="width:46px" class="r">Qty</th>
+          <th style="width:130px" class="r">Unit Price ({{currencySymbol}})</th>
+          <th style="width:140px" class="r">Amount ({{currencySymbol}})</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{#each lines}}
+        <tr><td>{{this.idx}}</td><td><div class="desc">{{this.desc}}</div><div class="sku">{{this.sku}}</div></td><td class="c">{{this.uom}}</td><td class="r">{{this.qty}}</td><td class="r">{{this.unitPrice}}</td><td class="r">{{this.amount}}</td></tr>
+        {{/each}}
+      </tbody>
+    </table>
+
+    <div class="c-bottom">
+      <div>
+        <div class="c-words">
+          <div class="lbl">Amount in Words</div>
+          <b>{{amountInWords}}</b>
+        </div>
+        <div class="c-paybox">
+          <div class="lbl">Payment Details</div>
+          {{{payment.html}}}
+        </div>
+      </div>
+      <div class="c-tot">
+        {{#each totals.rows}}
+        <div class="tr"><span class="k">{{this.label}}</span><span class="v">{{this.value}}</span></div>
+        {{/each}}
+        <div class="tr grand"><span class="k">Grand Total</span><span class="v">{{totals.grandTotal}}</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="c-foot">
+    <span>This proforma invoice is <span class="stamp">not a tax invoice</span> and is issued to confirm the above sales order.<br/>{{terms.note}}</span>
+    <span class="sign">For {{company.name}}<br/><span style="color:#9fb2e6; font-weight:500;">{{authorisation}}</span></span>
+  </div>
+</div>
+</body>
+</html>

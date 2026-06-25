@@ -8,6 +8,52 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
+### Procurement-side PI PDF is RETAINED, not retired (Prompt 43a decision)
+
+43a Task 7 asked whether the procurement-side "View PDF / Print PI" affordance
+(the Direction C template wired to procurement ProformaInvoice data, endpoints
+`GET /api/proforma-invoices/:id/pdf` and `/html`, gated `pi.read`) should be
+retired now that the sales-side PI exists. Decision: **retain it.** The
+procurement PI is VSK's inbound PI to Enviable; rendering Enviable's branded
+view of it is a plausible internal review/archival artifact, not something sent
+to VSK. Retiring an outward-facing endpoint is hard to reverse and I could not
+confirm with procurement that it is unused, so per the prompt's two-case logic
+("some operational use -> leave it, consider relabeling") it stays. **Frontend
+recommendation:** relabel the procurement-side affordance as "VSK PI reference
+(internal)" so it does not read as a document Enviable issues. If a stakeholder
+later confirms procurement never uses it, removal is a clean follow-up (delete
+the two handlers in `proforma-invoices.controller.ts`; the render methods on
+PdfRendererService can stay or go with it).
+
+### Sales PI snapshots the SO at creation; not re-issued on SO edit (Prompt 43a)
+
+One PI per SO (`salesOrderId` unique), auto-issued at SO creation. If the SO is
+later edited (lines/totals change via `update()`), the PI is NOT re-issued or
+updated, and the rendered PI reads live from the current SO at render time (it
+has no stored line snapshot), so an edited SO renders its PI with the NEW
+figures under the ORIGINAL piNumber/issue date. For MVP this is acceptable
+(edits before payment are rare and the PI is informational), but a real
+re-issuance flow (new piNumber, supersede the prior, or freeze a line snapshot
+on the PI) is deferred. Flag for the frontend: do not imply the PI is immutable.
+
+### Sales PI uses a single bank; per-product-type routing deferred (Prompt 43a)
+
+The sales PI payment box renders Enviable's single bank from CompanyProfile
+(`INVOICE_BANK_NAME`/`INVOICE_BANK_ACCOUNT`, defaults in `company-profile.ts`).
+Bank routing per product type (2-wheeler vs 3-wheeler) is deferred to the
+prompt 45 integration, which will extend `salesProformaPaymentHtml()` /
+CompanyProfile to select the bank by the SO's product mix.
+
+### nest-cli asset-copy: templates glob was missing watchAssets (Prompt 43a fix)
+
+`nest-cli.json` had `watchAssets: true` on the `documents/assets/**` glob but
+NOT on `documents/templates/**`, so in `start:dev` watch mode editing a `.hbs`
+did not re-copy it to `dist/` (the stale-template trap 42b hit). Fixed by adding
+`watchAssets: true` to the templates glob. Verified live: `nest build --watch`,
+edited the template, the edit propagated to `dist/` in ~2s. Build-time copy was
+never affected (a full `nest build` always copies assets); this only bit watch
+mode.
+
 ### Overpayment detection is against CONFIRMED balance only (Prompt 42a)
 
 `PaymentsService.record` detects overpayment as `amount > (SO.total - sum(CONFIRMED
@@ -614,6 +660,44 @@ partial. Documented as a historical artifact; new entries post-fix carry
 beforeState correctly per the convention.
 
 ## Done (this session)
+
+### Sales-side proforma invoice, auto-issued on SO creation (Prompt 43a)
+
+New `SalesProformaInvoice` entity (`sales_proforma_invoices`): `piNumber` unique,
+`salesOrderId` unique (one PI per SO), `issuedAt`, `issuedById` (the SO creator),
+distinct from the procurement-side `ProformaInvoice` (untouched). Migration
+`20260625005601_sales_proforma_invoice` (additive: new table + relations on
+SalesOrder and User).
+
+PI number sequence `PI-YYYY-NNNN` via `generateSalesPiNumber` (advisory lock key
+49008, distinct from PO/SH/SO/invoice/DN/WB), same pattern as the other
+generators: parses the current-year MAX suffix, NNNN resets at the year boundary.
+Concurrency-safe by the advisory xact lock (verified: 5 concurrent SO creations
+produced 5 distinct PI numbers).
+
+Auto-issue hook in `SalesOrdersService.create`: the PI is created in the SAME
+`$transaction` as the SO, with a distinct `salesproformainvoice.issue` audit
+entry (context soId/piNumber/customerId) written tx-scoped. If anything in the
+create fails the PI rolls back with the SO (verified: a failed create leaves no
+orphan PI). `SO_DETAIL_INCLUDE` and the `findAll` list both now include
+`salesProformaInvoice { id, piNumber, issuedAt }` so the frontend gets the
+"View PI" link without a second fetch.
+
+Rendering: NEW module `sales-proforma-invoices` exposes
+`GET /api/sales-proforma-invoices/:id` (metadata), `/pdf` (inline, for
+open-in-new-tab printing), `/html` (browser-printable), all gated
+`salesorder.read`. The PI reuses the Direction C "Branded Band" DESIGN via a new
+`sales-proforma-invoice.hbs` (shared CSS classes) bound to sales data
+(Enviable as "From", customer as "Bill To", SO ref, Enviable bank for payment),
+because the procurement `proforma-invoice.hbs` is hard-labeled for procurement
+("From (Supplier)", "Purchase Order") and would render wrong for a customer.
+New `buildSalesProformaInvoiceContext` + engine/renderer methods; procurement
+context + template left untouched (verified: procurement PI still renders with
+its own labels).
+
+Also fixed the nest-cli asset-copy watch gap (see Open). Verified by
+`verify-43a.ts` (30/30, all 14 probes A-N including a real PDF render, concurrency,
+and year-rollover), since deleted.
 
 ### Overpayment handling at payment recording (Prompt 42a)
 

@@ -141,6 +141,98 @@ export class InvoiceDocumentService {
     };
   }
 
+  // ── Sales-side proforma invoice (Direction C design, sales data) ───────────
+
+  /**
+   * Customer-facing proforma invoice (Enviable -> customer), bound to the
+   * SalesOrder the PI documents. Reuses the Direction C branded-band template
+   * with sales-correct labels: Enviable is the seller ("From"), the customer is
+   * "Bill To", and the payment box carries Enviable's own bank for the customer
+   * to pay into. Distinct from buildProformaInvoiceContext, which binds the
+   * procurement-side (supplier -> Enviable) PI.
+   */
+  async buildSalesProformaInvoiceContext(salesPiId: string) {
+    const pi = await this.prisma.salesProformaInvoice.findUnique({
+      where: { id: salesPiId },
+      include: {
+        issuedBy: { select: { fullName: true } },
+        salesOrder: {
+          include: {
+            customer: true,
+            lines: { include: { productVariant: { include: { product: true } } } },
+          },
+        },
+      },
+    });
+    if (!pi) {
+      throw new NotFoundException(`Sales proforma invoice ${salesPiId} not found`);
+    }
+
+    const so = pi.salesOrder;
+    const customer = so.customer;
+    const currency = this.salesCurrency;
+
+    const lines = this.groupSalesLines(so.lines).map((g, i) => ({
+      idx: i + 1,
+      desc: g.description,
+      sku: g.sku,
+      uom: DEFAULT_UOM,
+      qty: g.qty,
+      unitPrice: formatAmount(g.unitPrice),
+      amount: formatAmount(g.amount),
+    }));
+
+    const totalRows: Array<{ label: string; value: string }> = [
+      { label: 'Sub-Total', value: formatMoney(so.subtotal, currency) },
+    ];
+    if (so.discountTotal.gt(0)) {
+      totalRows.push({
+        label: 'Discount',
+        value: `- ${formatMoney(so.discountTotal, currency)}`,
+      });
+    }
+    totalRows.push({ label: 'VAT @ 7.5%', value: formatMoney(so.vatAmount, currency) });
+
+    const customerAddress = this.jsonAddressLines(customer.address);
+
+    return {
+      filename: `${pi.piNumber}.pdf`,
+      currencySymbol: currencyMeta(currency).symbol,
+      company: { name: this.company.name },
+      doc: {
+        piNumber: pi.piNumber,
+        issueDate: formatDate(pi.issuedAt),
+        salesOrder: so.soNumber,
+        totalValue: formatMoney(so.total, currency),
+      },
+      from: {
+        name: this.company.name,
+        addressHtml: addressHtml([
+          ...this.company.addressLines,
+          `RC ${this.company.rcNo} · TIN ${this.company.tin}`,
+        ]),
+      },
+      billTo: {
+        name: customer.name,
+        addressHtml: addressHtml([
+          ...customerAddress,
+          customer.taxId ? `TIN: ${customer.taxId}` : null,
+          customer.phone ?? null,
+        ]),
+      },
+      lines,
+      totals: { rows: totalRows, grandTotal: formatMoney(so.total, currency) },
+      amountInWords: amountInWords(so.total, currency),
+      payment: { html: this.salesProformaPaymentHtml() },
+      authorisation: pi.issuedBy
+        ? `Issued: ${pi.issuedBy.fullName} · ${formatDate(pi.issuedAt)}`
+        : `Issued: ${formatDate(pi.issuedAt)}`,
+      terms: {
+        note: 'This is a system-generated document and is valid without signature.',
+      },
+    };
+  }
+
   // ── Proforma invoice (Direction C) ─────────────────────────────────────────
 
   async buildProformaInvoiceContext(proformaId: string) {
@@ -383,6 +475,19 @@ export class InvoiceDocumentService {
   private jsonContactLines(json: Prisma.JsonValue): string[] {
     const lines = this.jsonAddressLines(json);
     return lines.length > 0 ? lines : [];
+  }
+
+  /**
+   * Payment box for the sales-side PI: Enviable's own bank for the customer to
+   * pay into, plus a payment instruction. Single bank for now; per-product-type
+   * bank routing (2-wheeler vs 3-wheeler) is deferred to a later integration.
+   */
+  private salesProformaPaymentHtml(): string {
+    return [
+      `<b>${this.escape(this.company.bankName)}</b>`,
+      `Account: ${this.escape(this.company.bankAccount)}`,
+      'Please quote the PI number on your transfer and send proof of payment to confirm your order.',
+    ].join('<br/>');
   }
 
   private proformaPaymentHtml(
