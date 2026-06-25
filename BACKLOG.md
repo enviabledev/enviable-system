@@ -8,6 +8,22 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
+### Cancelled-PI marking: banner-over-watermark, and only CANCELLED is marked (Prompt 47a)
+
+The sales PI surfaces an "ORDER CANCELLED" treatment when the SO is CANCELLED:
+a compact red header banner (inline-styled, print-color-adjust:exact so the red
+prints) plus a strikethrough/de-emphasis on the Payment Details box. Chose
+header-banner + strikethrough over a full-page diagonal watermark (the prompt's
+lean): cleaner print, unambiguous, and it does not consume toner across the whole
+page. Only the CANCELLED status is marked. Other terminal-ish states (DELIVERED,
+CLOSED, REFUNDED) render normally; a PI is an early-lifecycle document, so a
+"delivered" or "closed" marking was not requested and is out of scope. There is
+no PARTIALLY_DELIVERED status in SalesOrderStatus, so the "cancelled
+mid-fulfilment" edge the prompt mentions does not exist; if a released/dispatched
+order is later reversed it goes through the returns/refund flow (REFUNDED), not
+cancel, and the PI is not the customer-facing artifact at that point. Revisit if
+the business wants the PI to mark refunded/returned orders too.
+
 ### SKD units sell into SOLD_AS_CBU; no SOLD_AS_SKD state (Prompt 46a)
 
 A 3-wheeler now completes assembly to IN_WAREHOUSE_SKD and is sold from SKD as
@@ -760,6 +776,21 @@ partial. Documented as a historical artifact; new entries post-fix carry
 beforeState correctly per the convention.
 
 ## Done (this session)
+
+### Cancelled-SO marking on the sales PI (Prompt 47a)
+
+The sales proforma invoice now renders live from the SO's status (it already did)
+and surfaces a cancellation treatment when the SO is CANCELLED. No new endpoint,
+no migration, no audit (rendering is read-only). `buildSalesProformaInvoiceContext`
+adds `cancelled` (so.status === CANCELLED), `cancelledDate` (formatted
+so.cancelledAt or empty), and `salesOrderStatus`. `sales-proforma-invoice.hbs`
+gains a conditional red "ORDER CANCELLED" header banner (with the cancellation
+date and a "disregard payment instructions" line) and a strikethrough/opacity
+de-emphasis on the Payment Details box. Both the HTML and PDF endpoints reflect it
+(the PDF renders from the same HTML). Banner styles are inlined with
+print-color-adjust:exact so the red prints and the banner is independent of any
+page style. Verified by `verify-47a.ts` (23/23, all 10 probes A-J including a real
+PDF render), since deleted.
 
 ### SKD as a distinct unit state + SKD->CBU upgrade (Prompt 46a)
 

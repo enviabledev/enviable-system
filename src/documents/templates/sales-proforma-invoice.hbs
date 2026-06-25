@@ -7,6 +7,12 @@
 </head>
 <body>
 <div class="inv c">
+  {{#if cancelled}}
+  <div style="background:#c0182c; color:#ffffff; padding:12px 18px; text-align:center; border-radius:4px; margin-bottom:10px; -webkit-print-color-adjust:exact; print-color-adjust:exact;">
+    <div style="font-size:22px; font-weight:800; letter-spacing:2px; line-height:1.1;">ORDER CANCELLED{{#if cancelledDate}}<span style="font-weight:600; font-size:13px; letter-spacing:0;"> &middot; {{cancelledDate}}</span>{{/if}}</div>
+    <div style="font-size:11px; margin-top:4px; font-weight:500;">This proforma invoice is for a cancelled order. Please disregard payment instructions.</div>
+  </div>
+  {{/if}}
   <div class="c-band">
     <div class="c-band-top">
       <div class="c-logochip"><img src="{{logoDataUri}}" alt="{{company.name}}" /></div>
@@ -57,8 +63,8 @@
           <div class="lbl">Amount in Words</div>
           <b>{{amountInWords}}</b>
         </div>
-        <div class="c-paybox">
-          <div class="lbl">Payment Details</div>
+        <div class="c-paybox"{{#if cancelled}} style="text-decoration:line-through; opacity:0.45;"{{/if}}>
+          <div class="lbl">Payment Details{{#if cancelled}} (disregarded){{/if}}</div>
           {{{payment.html}}}
         </div>
       </div>

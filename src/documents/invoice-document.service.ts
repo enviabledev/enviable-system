@@ -5,6 +5,7 @@ import {
   PaymentStatus,
   Prisma,
   ProductType,
+  SalesOrderStatus,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { amountInWords } from './amount-in-words';
@@ -200,10 +201,20 @@ export class InvoiceDocumentService {
 
     const customerAddress = this.jsonAddressLines(customer.address);
 
+    // The PI renders live from the SO's current state. When the SO is CANCELLED,
+    // the template surfaces a cancellation banner and de-emphasises the payment
+    // instructions so a customer holding a printed PI is not misled.
+    const cancelled = so.status === SalesOrderStatus.CANCELLED;
+
     return {
       filename: `${pi.piNumber}.pdf`,
       currencySymbol: currencyMeta(currency).symbol,
       company: { name: this.company.name },
+      // SO status drives the cancellation treatment; cancelledDate is shown in
+      // the banner when available.
+      salesOrderStatus: so.status,
+      cancelled,
+      cancelledDate: so.cancelledAt ? formatDate(so.cancelledAt) : '',
       doc: {
         piNumber: pi.piNumber,
         issueDate: formatDate(pi.issuedAt),
