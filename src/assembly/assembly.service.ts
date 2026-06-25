@@ -5,8 +5,10 @@ import {
 } from '@nestjs/common';
 import {
   AssemblyJobStatus,
+  AssemblyJobType,
   MovementReferenceType,
   MovementType,
+  ProductType,
   Unit,
   UnitStatus,
 } from '@prisma/client';
@@ -79,29 +81,33 @@ export class AssemblyService {
     });
   }
 
+  /**
+   * Complete an in-progress job. The target state depends on the job type and
+   * the unit's wheeler type:
+   *   - SKD_TO_CBU upgrade           -> IN_WAREHOUSE_CBU
+   *   - CKD_TO_ASSEMBLED, 3-wheeler  -> IN_WAREHOUSE_SKD (semi knocked down)
+   *   - CKD_TO_ASSEMBLED, 2-wheeler  -> IN_WAREHOUSE_CBU (no SKD step)
+   * transitionUnit writes the StockMovement in the same transaction (I-3).
+   */
   async complete(jobId: string, actorId: string) {
     const job = await this.loadInProgressJob(jobId);
+    const unit = await this.prisma.unit.findUniqueOrThrow({
+      where: { id: job.unitId },
+      include: { productVariant: { select: { productType: true } } },
+    });
+    const target =
+      job.jobType === AssemblyJobType.SKD_TO_CBU ||
+      unit.productVariant.productType === ProductType.TWO_WHEELER
+        ? UnitStatus.IN_WAREHOUSE_CBU
+        : UnitStatus.IN_WAREHOUSE_SKD;
+
     return this.prisma.$transaction(async (tx) => {
-      // Both 2-wheeler and 3-wheeler assembly complete to IN_WAREHOUSE_CBU. The
-      // system has no separate SKD/assembled warehouse state distinct from CBU
-      // (the only assembled state IS CBU), so assembly is product-type agnostic
-      // today and 3-wheeler behaviour is unchanged. The future 3-wheeler
-      // SKD-then-CBU split (storefront sales) would introduce a new warehouse
-      // state and branch the target here by the unit variant's productType; it
-      // is explicitly out of scope for now and handled via the unit lifecycle
-      // adjust flow when it lands. See BACKLOG.
-      await transitionUnit(
-        tx,
-        job.unitId,
-        UnitStatus.IN_WAREHOUSE_CBU,
-        MovementType.ASSEMBLY_COMPLETE,
-        {
-          actorId,
-          referenceType: MovementReferenceType.ASSEMBLY_JOB,
-          referenceId: jobId,
-          unitData: { assembledAt: new Date(), assembledById: actorId },
-        },
-      );
+      await transitionUnit(tx, job.unitId, target, MovementType.ASSEMBLY_COMPLETE, {
+        actorId,
+        referenceType: MovementReferenceType.ASSEMBLY_JOB,
+        referenceId: jobId,
+        unitData: { assembledAt: new Date(), assembledById: actorId },
+      });
       return tx.assemblyJob.update({
         where: { id: jobId },
         data: { status: AssemblyJobStatus.COMPLETED, completedAt: new Date() },
@@ -133,32 +139,80 @@ export class AssemblyService {
   }
 
   /**
-   * Clean cancellation of an in-progress assembly (wrong unit picked,
-   * administrative correction, assembly aborted before any physical work). The
-   * unit returns to IN_WAREHOUSE_CKD intact and the job closes CANCELLED, both
-   * atomically. This intact reversal is coherent ONLY from IN_ASSEMBLY: a
-   * finished CBU cannot be un-built back to a kit, which is why the state
-   * machine has no IN_WAREHOUSE_CBU -> IN_WAREHOUSE_CKD edge. The reversal is a
-   * corrective movement (ADJUSTMENT), referenced to the assembly job; the
-   * reason is carried on the movement notes for the offline timeline and the
-   * audit row. transitionUnit writes the StockMovement in the same transaction,
-   * so Invariant I-3 holds for the reversal automatically.
+   * Authorise the SKD -> CBU upgrade of a single 3-wheeler as a NEW assembly job
+   * (jobType SKD_TO_CBU). The unit must be IN_WAREHOUSE_SKD (only SKD units are
+   * upgradeable) and its variant must be THREE_WHEELER (2-wheelers are already
+   * CBU); both are 409 otherwise. Creates the job IN_PROGRESS and moves the unit
+   * back into IN_ASSEMBLY. Gated by a separate permission (assembly.upgrade).
    */
-  async cancel(jobId: string, actorId: string, reason: string) {
-    const job = await this.loadInProgressJob(jobId);
+  async startUpgrade(unitRef: string, actorId: string) {
+    const [unit] = await this.resolveUnits([unitRef]);
+    const variant = await this.prisma.productVariant.findUniqueOrThrow({
+      where: { id: unit.productVariantId },
+      select: { productType: true },
+    });
+    if (unit.status !== UnitStatus.IN_WAREHOUSE_SKD) {
+      throw new ConflictException(
+        `Unit ${unit.engineNumber} is ${unit.status}, not IN_WAREHOUSE_SKD; only an SKD unit can be upgraded to CBU.`,
+      );
+    }
+    if (variant.productType !== ProductType.THREE_WHEELER) {
+      throw new ConflictException(
+        `Unit ${unit.engineNumber} is a ${variant.productType} variant; only THREE_WHEELER units have an SKD to CBU upgrade.`,
+      );
+    }
+    await assertVariantsActive(this.prisma, [unit.productVariantId], 'units');
+
     return this.prisma.$transaction(async (tx) => {
+      const job = await tx.assemblyJob.create({
+        data: {
+          unitId: unit.id,
+          jobType: AssemblyJobType.SKD_TO_CBU,
+          status: AssemblyJobStatus.IN_PROGRESS,
+          startedAt: new Date(),
+          supervisorId: actorId,
+        },
+        include: JOB_INCLUDE,
+      });
       await transitionUnit(
         tx,
-        job.unitId,
-        UnitStatus.IN_WAREHOUSE_CKD,
-        MovementType.ADJUSTMENT,
+        unit.id,
+        UnitStatus.IN_ASSEMBLY,
+        MovementType.ASSEMBLY_START,
         {
           actorId,
           referenceType: MovementReferenceType.ASSEMBLY_JOB,
-          referenceId: jobId,
-          notes: reason,
+          referenceId: job.id,
         },
       );
+      return job;
+    });
+  }
+
+  /**
+   * Clean cancellation of an in-progress assembly (wrong unit picked,
+   * administrative correction, assembly aborted before any physical work). The
+   * unit reverts to its SOURCE state and the job closes CANCELLED, both
+   * atomically: a CKD_TO_ASSEMBLED job reverts to IN_WAREHOUSE_CKD, a SKD_TO_CBU
+   * upgrade reverts to IN_WAREHOUSE_SKD. The intact reversal is coherent only
+   * from IN_ASSEMBLY (a finished unit cannot be un-built). The reversal is a
+   * corrective movement (ADJUSTMENT), referenced to the job; the reason is on
+   * the movement notes. transitionUnit writes the StockMovement in the same
+   * transaction, so Invariant I-3 holds automatically.
+   */
+  async cancel(jobId: string, actorId: string, reason: string) {
+    const job = await this.loadInProgressJob(jobId);
+    const revertTo =
+      job.jobType === AssemblyJobType.SKD_TO_CBU
+        ? UnitStatus.IN_WAREHOUSE_SKD
+        : UnitStatus.IN_WAREHOUSE_CKD;
+    return this.prisma.$transaction(async (tx) => {
+      await transitionUnit(tx, job.unitId, revertTo, MovementType.ADJUSTMENT, {
+        actorId,
+        referenceType: MovementReferenceType.ASSEMBLY_JOB,
+        referenceId: jobId,
+        notes: reason,
+      });
       return tx.assemblyJob.update({
         where: { id: jobId },
         data: {

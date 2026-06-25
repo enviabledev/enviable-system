@@ -612,13 +612,17 @@ export class SalesOrdersService {
           `Unit ${line.unitId} is variant ${unit.productVariantId}, not ${line.productVariantId}`,
         );
       }
-      const required =
+      // A CKD-form line needs a kit (IN_WAREHOUSE_CKD). A CBU-form line needs a
+      // built unit: either IN_WAREHOUSE_CBU OR IN_WAREHOUSE_SKD, since a
+      // 3-wheeler completes assembly to SKD and is sold from SKD as a built unit
+      // (it becomes SOLD_AS_CBU at release). Both assembled states are sellable.
+      const allowed: UnitStatus[] =
         line.saleForm === SaleForm.CKD
-          ? UnitStatus.IN_WAREHOUSE_CKD
-          : UnitStatus.IN_WAREHOUSE_CBU;
-      if (unit.status !== required) {
+          ? [UnitStatus.IN_WAREHOUSE_CKD]
+          : [UnitStatus.IN_WAREHOUSE_SKD, UnitStatus.IN_WAREHOUSE_CBU];
+      if (!allowed.includes(unit.status)) {
         throw new ConflictException(
-          `Unit ${unit.engineNumber} is ${unit.status}, not ${required} required for a ${line.saleForm} line.`,
+          `Unit ${unit.engineNumber} is ${unit.status}, not ${allowed.join(' or ')} required for a ${line.saleForm} line.`,
         );
       }
 

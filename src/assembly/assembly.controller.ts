@@ -11,6 +11,7 @@ import { Audit, CurrentUser, RequirePermissions } from '../common/decorators';
 import { AssemblyService } from './assembly.service';
 import { CancelAssemblyJobDto } from './dto/cancel-assembly-job.dto';
 import { CreateAssemblyJobsDto } from './dto/create-assembly-jobs.dto';
+import { UpgradeAssemblyJobDto } from './dto/upgrade-assembly-job.dto';
 
 @Controller('assembly-jobs')
 export class AssemblyController {
@@ -37,6 +38,20 @@ export class AssemblyController {
     @CurrentUser() actor: Principal,
   ) {
     return this.assembly.startAssembly(dto.unitRefs, actor.id);
+  }
+
+  // Authorise the SKD -> CBU upgrade of a single 3-wheeler as a new assembly
+  // job. Separately permissioned (assembly.upgrade) from the kit-assembly
+  // operations. The resulting job runs through the same complete/fail/cancel
+  // endpoints below; its jobType (SKD_TO_CBU) drives their behaviour.
+  @Post('upgrade')
+  @RequirePermissions('assembly.upgrade')
+  @Audit('assembly.upgrade.start', 'AssemblyJob')
+  upgrade(
+    @Body() dto: UpgradeAssemblyJobDto,
+    @CurrentUser() actor: Principal,
+  ) {
+    return this.assembly.startUpgrade(dto.unitRef, actor.id);
   }
 
   // Per-job completion (traceability). Writes assembledById, so it needs the

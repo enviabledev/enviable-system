@@ -52,7 +52,8 @@ const PERMISSIONS: { key: string; category: string; description: string }[] = [
   { key: 'productvariant.manage', category: 'inventory', description: 'Create and edit product variants (catalogue)' },
   // Assembly
   { key: 'assembly.read', category: 'assembly', description: 'View assembly jobs' },
-  { key: 'assembly.perform', category: 'assembly', description: 'Start/complete/fail assembly jobs' },
+  { key: 'assembly.perform', category: 'assembly', description: 'Start/complete/fail/cancel assembly jobs' },
+  { key: 'assembly.upgrade', category: 'assembly', description: 'Authorise the SKD to CBU storefront upgrade' },
   // Sales
   { key: 'customer.read', category: 'sales', description: 'View customers' },
   { key: 'customer.manage', category: 'sales', description: 'Create/edit customers' },
@@ -153,14 +154,14 @@ const ROLES: { name: string; description: string; permissions: string[] }[] = [
     permissions: [
       'shipment.read', 'shipment.receive', 'unit.read', 'unit.adjust', 'unit.transfer',
       'movement.read', 'sparepart.read', 'sparepart.manage', 'product.read', 'assembly.read',
-      'assembly.perform', 'salesorder.read', 'delivery.manage', 'return.manage', 'costdata.view',
+      'assembly.perform', 'assembly.upgrade', 'salesorder.read', 'delivery.manage', 'return.manage', 'costdata.view',
       'report.stocks', 'conflict.resolve', 'document.read',
     ],
   },
   {
     name: 'Assembly Floor Supervisor',
     description: 'Performs assembly jobs',
-    permissions: ['unit.read', 'assembly.read', 'assembly.perform', 'sparepart.read', 'product.read'],
+    permissions: ['unit.read', 'assembly.read', 'assembly.perform', 'assembly.upgrade', 'sparepart.read', 'product.read'],
   },
   {
     name: 'Head of Sales',

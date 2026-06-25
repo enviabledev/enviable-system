@@ -31,24 +31,38 @@ const ADJUSTMENT_MOVEMENTS: Partial<
     [S.IN_REPAIR]: M.REPAIR_IN,
     [S.WRITTEN_OFF]: M.WRITE_OFF,
   },
+  // SKD mirrors CBU's adjustment edges (a semi-knocked-down 3-wheeler diverts
+  // exactly as a CBU unit does). Sale (SKD -> SOLD_AS_CBU) and the SKD -> CBU
+  // upgrade (SKD -> IN_ASSEMBLY) are workflow paths, not adjustments, so they are
+  // deliberately absent here, consistent with CBU -> SOLD and CKD -> IN_ASSEMBLY.
+  [S.IN_WAREHOUSE_SKD]: {
+    [S.DAMAGED]: M.DAMAGE,
+    [S.DEMO]: M.DEMO,
+    [S.INTERNAL_USE]: M.INTERNAL_USE,
+    [S.IN_REPAIR]: M.REPAIR_IN,
+    [S.WRITTEN_OFF]: M.WRITE_OFF,
+  },
   [S.DAMAGED]: {
     [S.IN_REPAIR]: M.REPAIR_IN,
     [S.WRITTEN_OFF]: M.WRITE_OFF,
   },
   [S.IN_REPAIR]: {
     [S.IN_WAREHOUSE_CKD]: M.RESTOCK_FROM_REPAIR,
+    [S.IN_WAREHOUSE_SKD]: M.RESTOCK_FROM_REPAIR,
     [S.IN_WAREHOUSE_CBU]: M.RESTOCK_FROM_REPAIR,
     [S.WRITTEN_OFF]: M.WRITE_OFF,
   },
   [S.DEMO]: {
     // Return-to-warehouse from demo is a RETURN-style movement.
     [S.IN_WAREHOUSE_CKD]: M.RETURN,
+    [S.IN_WAREHOUSE_SKD]: M.RETURN,
     [S.IN_WAREHOUSE_CBU]: M.RETURN,
     [S.INTERNAL_USE]: M.INTERNAL_USE,
     [S.WRITTEN_OFF]: M.WRITE_OFF,
   },
   [S.INTERNAL_USE]: {
     [S.IN_WAREHOUSE_CKD]: M.RETURN,
+    [S.IN_WAREHOUSE_SKD]: M.RETURN,
     [S.IN_WAREHOUSE_CBU]: M.RETURN,
     [S.WRITTEN_OFF]: M.WRITE_OFF,
   },

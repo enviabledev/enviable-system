@@ -143,6 +143,10 @@ enum UnitStatus {
   IN_TRANSIT
   IN_WAREHOUSE_CKD
   IN_ASSEMBLY
+  // Semi Knocked Down: a 3-wheeler that has completed assembly to SKD. Distinct
+  // from CBU (fully built). 3-wheelers complete to SKD and sell from SKD; the
+  // SKD -> CBU upgrade (storefront) is a separate authorised assembly job.
+  IN_WAREHOUSE_SKD
   IN_WAREHOUSE_CBU
   SOLD_AS_CKD
   SOLD_AS_CBU
@@ -196,6 +200,15 @@ enum AssemblyJobStatus {
   COMPLETED
   FAILED
   CANCELLED
+}
+
+// What an assembly job builds. CKD_TO_ASSEMBLED is the original kit assembly
+// (CKD -> SKD for 3-wheelers, CKD -> CBU for 2-wheelers). SKD_TO_CBU is the
+// authorised storefront upgrade of a 3-wheeler (SKD -> CBU). Drives the
+// completion target and the cancel revert state.
+enum AssemblyJobType {
+  CKD_TO_ASSEMBLED
+  SKD_TO_CBU
 }
 
 enum CustomerType {
@@ -760,7 +773,7 @@ model Unit {
   currentWarehouse Warehouse?       @relation(fields: [currentWarehouseId], references: [id])
   assembledBy      User?            @relation("UnitAssembledBy", fields: [assembledById], references: [id])
   movements        StockMovement[]
-  assemblyJob      AssemblyJob?
+  assemblyJobs     AssemblyJob[]
   salesOrderLines  SalesOrderLine[]
   returns          Return[]
 
@@ -860,7 +873,12 @@ model SparePartMovement {
 
 model AssemblyJob {
   id           String            @id @default(cuid())
-  unitId       String            @unique
+  // A unit may have several jobs over its lifetime (the original CKD assembly,
+  // then a later SKD -> CBU upgrade), so unitId is NOT unique. "At most one
+  // IN_PROGRESS job per unit" is enforced by a partial unique index added in the
+  // SKD migration (assembly_jobs_unitId_in_progress_key).
+  unitId       String
+  jobType      AssemblyJobType   @default(CKD_TO_ASSEMBLED)
   startedAt    DateTime?
   completedAt  DateTime?
   supervisorId String?
@@ -872,6 +890,7 @@ model AssemblyJob {
   unit       Unit  @relation(fields: [unitId], references: [id])
   supervisor User? @relation("AssemblyJobSupervisor", fields: [supervisorId], references: [id])
 
+  @@index([unitId])
   @@map("assembly_jobs")
 }
 

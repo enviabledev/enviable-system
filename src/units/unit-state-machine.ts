@@ -4,7 +4,7 @@ import { UnitStatus } from '@prisma/client';
 const S = UnitStatus;
 
 /**
- * The COMPLETE legal unit state transition map. Every one of the 13 states is a
+ * The COMPLETE legal unit state transition map. Every one of the 14 states is a
  * key. This prompt (M3) only exposes the assembly edges as endpoints, but the
  * map is the full domain truth: M4 reuses it for sale (IN_WAREHOUSE_CKD ->
  * SOLD_AS_CKD, IN_WAREHOUSE_CBU -> SOLD_AS_CBU) and return (SOLD_* -> RETURNED,
@@ -30,8 +30,31 @@ export const UNIT_STATE_TRANSITIONS: Record<UnitStatus, UnitStatus[]> = {
     S.WRITTEN_OFF,
   ],
 
-  // Mid-assembly: complete to CBU, fail to DAMAGED, or cancel back to a kit.
-  [S.IN_ASSEMBLY]: [S.IN_WAREHOUSE_CBU, S.DAMAGED, S.IN_WAREHOUSE_CKD],
+  // Mid-assembly. Completion target depends on job type and wheeler type:
+  // 3-wheeler kit assembly -> SKD, 2-wheeler kit assembly -> CBU, SKD upgrade
+  // -> CBU. Fail -> DAMAGED. Cancel reverts to the source (CKD for a kit job,
+  // SKD for an upgrade job).
+  [S.IN_ASSEMBLY]: [
+    S.IN_WAREHOUSE_SKD,
+    S.IN_WAREHOUSE_CBU,
+    S.DAMAGED,
+    S.IN_WAREHOUSE_CKD,
+  ],
+
+  // A semi-knocked-down 3-wheeler in the warehouse. Sellable as a built unit
+  // (SOLD_AS_CBU), upgradeable to CBU (IN_ASSEMBLY via the SKD->CBU job), or
+  // divertible exactly as a CBU unit is. Mirrors IN_WAREHOUSE_CBU plus the
+  // upgrade edge.
+  [S.IN_WAREHOUSE_SKD]: [
+    S.SOLD_AS_CBU,
+    S.IN_ASSEMBLY,
+    S.DAMAGED,
+    S.DEMO,
+    S.INTERNAL_USE,
+    S.TRANSFERRED,
+    S.IN_REPAIR,
+    S.WRITTEN_OFF,
+  ],
 
   // An assembled unit in the warehouse: sell, divert, or send to repair.
   [S.IN_WAREHOUSE_CBU]: [
@@ -51,28 +74,40 @@ export const UNIT_STATE_TRANSITIONS: Record<UnitStatus, UnitStatus[]> = {
   // Damaged: repair it or write it off.
   [S.DAMAGED]: [S.IN_REPAIR, S.WRITTEN_OFF],
 
-  // Under repair: restock as kit or assembled, or write off if unrepairable.
-  [S.IN_REPAIR]: [S.IN_WAREHOUSE_CKD, S.IN_WAREHOUSE_CBU, S.WRITTEN_OFF],
+  // Under repair: restock as kit, SKD, or assembled, or write off if unrepairable.
+  [S.IN_REPAIR]: [
+    S.IN_WAREHOUSE_CKD,
+    S.IN_WAREHOUSE_SKD,
+    S.IN_WAREHOUSE_CBU,
+    S.WRITTEN_OFF,
+  ],
 
   // Demo unit: return to stock, convert to internal use, or write off.
   [S.DEMO]: [
     S.IN_WAREHOUSE_CBU,
+    S.IN_WAREHOUSE_SKD,
     S.IN_WAREHOUSE_CKD,
     S.INTERNAL_USE,
     S.WRITTEN_OFF,
   ],
 
-  // In internal use: can be returned to sellable stock (as kit or assembled)
-  // or written off. The return is an IT-admin adjustment (internal-use
-  // round-trip), symmetric with DEMO.
-  [S.INTERNAL_USE]: [S.IN_WAREHOUSE_CKD, S.IN_WAREHOUSE_CBU, S.WRITTEN_OFF],
+  // In internal use: can be returned to sellable stock (as kit, SKD, or
+  // assembled) or written off. The return is an IT-admin adjustment
+  // (internal-use round-trip), symmetric with DEMO.
+  [S.INTERNAL_USE]: [
+    S.IN_WAREHOUSE_CKD,
+    S.IN_WAREHOUSE_SKD,
+    S.IN_WAREHOUSE_CBU,
+    S.WRITTEN_OFF,
+  ],
 
   // Transferred to another warehouse: arrives as stock at the destination.
-  [S.TRANSFERRED]: [S.IN_WAREHOUSE_CKD, S.IN_WAREHOUSE_CBU],
+  [S.TRANSFERRED]: [S.IN_WAREHOUSE_CKD, S.IN_WAREHOUSE_SKD, S.IN_WAREHOUSE_CBU],
 
   // Returned by a customer: inspected then restocked, repaired, or written off.
   [S.RETURNED]: [
     S.IN_WAREHOUSE_CKD,
+    S.IN_WAREHOUSE_SKD,
     S.IN_WAREHOUSE_CBU,
     S.DAMAGED,
     S.IN_REPAIR,

@@ -8,7 +8,50 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
-### No SKD warehouse state; assembly is product-type agnostic (Prompt 45a finding + decision)
+### SKD units sell into SOLD_AS_CBU; no SOLD_AS_SKD state (Prompt 46a)
+
+A 3-wheeler now completes assembly to IN_WAREHOUSE_SKD and is sold from SKD as
+the primary path. There is no SOLD_AS_SKD sold-state: a sold SKD unit becomes
+SOLD_AS_CBU (the only "sold assembled" state), so post-sale the SKD-vs-CBU
+distinction is lost in the sold record. The on-hand distinction (the point of
+this prompt: SKD and CBU counted separately in stock) is preserved; only the
+realised/sold record collapses both to SOLD_AS_CBU. If the business needs to
+distinguish SKD-sold from CBU-sold post-sale (e.g. warranty, returns routing),
+add SOLD_AS_SKD and thread it through returns (I-15) and the sale form. Deferred.
+
+### resolveLines accepts SKD or CBU for a CBU-form sale (Prompt 46a)
+
+To keep 3-wheeler sales working after they moved to SKD, a CBU-form sales line
+now accepts a unit in IN_WAREHOUSE_SKD OR IN_WAREHOUSE_CBU (both are built and
+sellable; release transitions either to SOLD_AS_CBU). This is additive: CKD-form
+still requires IN_WAREHOUSE_CKD, and existing CBU-from-CBU sales are unchanged.
+SaleForm stays {CKD, CBU} (no SKD sale form); the unit's warehouse state, not the
+sale form, carries the SKD distinction.
+
+### Upgrade complete/fail/cancel share audit actions with kit assembly (Prompt 46a)
+
+The SKD->CBU upgrade has its own START action (assembly.upgrade.start, its own
+endpoint). But complete/fail/cancel are SHARED endpoints that operate on any job
+by id, so they keep their existing audit actions (assembly.complete /
+assembly.fail / assembly.cancel) regardless of job type. An upgrade completion is
+distinguishable in the audit row by afterState.jobType = SKD_TO_CBU (the response
+the interceptor captures includes jobType), same pattern as the historical-load
+dry-run flag. If at-a-glance action-name distinction is later wanted, split the
+endpoints or write explicit upgrade-specific audit entries in the service.
+
+### Inventory valuation treats SKD and CBU identically (Prompt 46a note)
+
+The stocks report counts SKD and CBU in distinct buckets but values both at
+currentMarketPrice as on-hand stock (IN_STOCK_BUCKETS = ckd, inAssembly, skd,
+cbu). There is no separate valuation for the work-in-value between SKD and CBU
+(the storefront upgrade adds labour/parts value not captured here). If SKD and
+CBU need different unit valuations, that is a deeper costing question, deferred.
+
+### No SKD warehouse state; assembly is product-type agnostic (Prompt 45a finding + decision) [SUPERSEDED by 46a]
+
+RESOLVED: prompt 46a added IN_WAREHOUSE_SKD as a real state with the conditional
+assembly and SKD->CBU upgrade described below as future work. Original 45a note
+retained for history:
 
 Prompt 45a's Task 4 assumed a 3-wheeler "SKD/assembled" state distinct from CBU.
 It does not exist: `UnitStatus` has CKD, IN_ASSEMBLY (transient), and CBU only;
@@ -717,6 +760,45 @@ partial. Documented as a historical artifact; new entries post-fix carry
 beforeState correctly per the convention.
 
 ## Done (this session)
+
+### SKD as a distinct unit state + SKD->CBU upgrade (Prompt 46a)
+
+PRE-DEPLOY: TWO migrations. `20260625093138_add_skd_state_and_assembly_job_type`
+adds the IN_WAREHOUSE_SKD enum value, the AssemblyJobType enum, the
+AssemblyJob.jobType column (default CKD_TO_ASSEMBLED), drops the full unique on
+assembly_jobs.unitId, and adds a partial unique index (one IN_PROGRESS job per
+unit). `20260625093215_backfill_three_wheeler_cbu_to_skd` reclassifies existing
+3-wheeler IN_WAREHOUSE_CBU units to IN_WAREHOUSE_SKD. SNAPSHOT prod before deploy.
+The two migrations are split deliberately: Postgres forbids using a new enum value
+in the same transaction that adds it, so the backfill (which uses
+IN_WAREHOUSE_SKD) must be its own migration. The backfill is a NO-OP in production
+(greenfield: zero completed 3-wheeler units), affecting only dev fixtures.
+
+Backfill decision: OPTION (a) (reclassify CBU 3-wheelers to SKD) for operational
+coherence with the model that 3-wheelers complete to SKD. Safe because SKD is
+sellable exactly as CBU was.
+
+- AssemblyJob reuse: confirmed it needed BOTH a jobType discriminator (drives the
+  completion target and the cancel revert state) AND removal of the unitId unique
+  (a unit now has multiple jobs over its lifetime). "One active job per unit" is
+  preserved by the partial unique index. The Unit.assemblyJob relation became
+  assemblyJobs[] (only a schema relation, never read in code).
+- complete() branches: SKD_TO_CBU -> CBU; CKD_TO_ASSEMBLED 3-wheeler -> SKD,
+  2-wheeler -> CBU. cancel() reverts to source by jobType (CKD or SKD). fail()
+  unchanged (-> DAMAGED).
+- New POST /api/assembly-jobs/upgrade (permission assembly.upgrade) creates the
+  SKD_TO_CBU job; validates SKD + THREE_WHEELER (409 otherwise). Reuses the
+  shared complete/fail/cancel endpoints.
+- State machine + adjustment map: SKD mirrors every CBU edge plus the upgrade
+  edge; SKD added as a restock target wherever CBU is.
+- Sales: a CBU-form line accepts SKD or CBU units (3-wheelers sell from SKD).
+- Reports: distinct skd bucket alongside cbu; both valued as on-hand stock.
+- Seed: assembly.upgrade permission granted to the roles that hold
+  assembly.perform.
+
+Verified by `verify-46a.ts` (32/32, all 21 probes A-U including I-3 across the
+upgrade lifecycle, concurrent mixed-type completions, and report bucketing),
+since deleted.
 
 ### 2-wheeler / 3-wheeler product type integration (Prompt 45a)
 

@@ -2,7 +2,7 @@ import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { Prisma, UnitStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
-type Bucket = 'ckd' | 'inAssembly' | 'cbu' | 'sold' | 'other';
+type Bucket = 'ckd' | 'inAssembly' | 'skd' | 'cbu' | 'sold' | 'other';
 
 // Every UnitStatus maps to exactly one of the five lifecycle buckets. Typing
 // this as Record<UnitStatus, Bucket> forces ALL enum values to be present:
@@ -12,6 +12,7 @@ type Bucket = 'ckd' | 'inAssembly' | 'cbu' | 'sold' | 'other';
 const STATUS_BUCKET: Record<UnitStatus, Bucket> = {
   [UnitStatus.IN_WAREHOUSE_CKD]: 'ckd',
   [UnitStatus.IN_ASSEMBLY]: 'inAssembly',
+  [UnitStatus.IN_WAREHOUSE_SKD]: 'skd',
   [UnitStatus.IN_WAREHOUSE_CBU]: 'cbu',
   [UnitStatus.SOLD_AS_CKD]: 'sold',
   [UnitStatus.SOLD_AS_CBU]: 'sold',
@@ -29,12 +30,14 @@ const STATUS_BUCKET: Record<UnitStatus, Bucket> = {
 // realised (no longer stock); the Other bucket (damaged, written-off, in-transit,
 // demo, in-repair, internal-use, returned, transferred) is not valued as
 // sellable on-hand stock. Market value = currentMarketPrice times the count of
-// CKD + InAssembly + CBU units. This is a deliberate definition of "in-stock
-// value"; the per-variant rows expose inStockCount so the figure is auditable.
-const IN_STOCK_BUCKETS: Bucket[] = ['ckd', 'inAssembly', 'cbu'];
+// CKD + InAssembly + SKD + CBU units. SKD and CBU are reported as distinct
+// buckets but both are sellable on-hand stock. This is a deliberate definition
+// of "in-stock value"; the per-variant rows expose inStockCount so the figure is
+// auditable.
+const IN_STOCK_BUCKETS: Bucket[] = ['ckd', 'inAssembly', 'skd', 'cbu'];
 
 function emptyCounts(): Record<Bucket, number> {
-  return { ckd: 0, inAssembly: 0, cbu: 0, sold: 0, other: 0 };
+  return { ckd: 0, inAssembly: 0, skd: 0, cbu: 0, sold: 0, other: 0 };
 }
 
 @Injectable()
@@ -102,6 +105,7 @@ export class ReportsService {
         const total =
           counts.ckd +
           counts.inAssembly +
+          counts.skd +
           counts.cbu +
           counts.sold +
           counts.other;
