@@ -7,9 +7,16 @@ import {
 import {
   CustomerStatus,
   CustomerTierStatus,
+  CustomerType,
   Prisma,
   SalesOrderStatus,
 } from '@prisma/client';
+
+// The seeded Individual (retail/walk-in) tier id. Fixed in the seed and the
+// individual_customer_tier data migration; an END_USER customer created with no
+// explicit tier is auto-assigned here so individual customers are saleable (an
+// Individual price-list entry must still exist for the variant, same as any tier).
+export const INDIVIDUAL_TIER_ID = 'seed-tier-individual';
 
 // Terminal sales-order states do not block customer deletion. CLOSED and
 // CANCELLED are the prompt's baseline; REFUNDED is terminal in the same sense (a
@@ -94,12 +101,20 @@ export class CustomersService {
   }
 
   async create(dto: CreateCustomerDto) {
+    // Auto-assign the Individual tier to an END_USER customer created without an
+    // explicit tier, so individual customers are saleable (a reseller without a
+    // tier stays null: resellers must explicitly choose Standard or Volume). An
+    // explicit tierId always wins, including an END_USER pointed at a reseller
+    // tier (override allowed for now; see BACKLOG).
+    const tierId =
+      dto.tierId ??
+      (dto.type === CustomerType.END_USER ? INDIVIDUAL_TIER_ID : null);
     try {
       return await this.prisma.customer.create({
         data: {
           name: dto.name,
           ...(dto.type ? { type: dto.type } : {}),
-          tierId: dto.tierId ?? null,
+          tierId,
           phone: dto.phone ?? null,
           email: dto.email ?? null,
           taxId: dto.taxId ?? null,

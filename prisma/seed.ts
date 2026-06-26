@@ -454,6 +454,19 @@ async function main() {
     update: {},
     create: { name: 'ResellerVolume', description: 'Volume reseller pricing' },
   });
+  // Individual (retail/walk-in) tier. Fixed id so the auto-assignment constant in
+  // the customers module (INDIVIDUAL_TIER_ID) and the data migration agree. No
+  // Individual price-list entries are seeded by design: individual prices are set
+  // explicitly via the price-list UI, preserving "no PriceListEntry = no sale".
+  await prisma.customerTier.upsert({
+    where: { name: 'Individual' },
+    update: {},
+    create: {
+      id: 'seed-tier-individual',
+      name: 'Individual',
+      description: 'Retail/walk-in individual customers.',
+    },
+  });
 
   // Current price per variant per tier (illustrative)
   const dbVariants = await prisma.productVariant.findMany();

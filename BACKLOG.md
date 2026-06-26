@@ -8,6 +8,30 @@ implementation that don't belong in CLAUDE.md.
 
 ## Open
 
+### END_USER customer may be explicitly assigned a reseller tier (Prompt 50a)
+
+`CustomersService.create` auto-assigns the Individual tier to an END_USER customer
+ONLY when no explicit tierId is given. An explicit tierId always wins, including an
+END_USER pointed at ResellerStandard/ResellerVolume (probe H confirms this is
+allowed). This is the deliberate looser model: the system does not enforce
+"END_USER => Individual tier only". For MVP this is fine (a deliberate
+reseller-priced individual is a valid, if rare, operational choice). If it becomes
+a problem, the constraint to add is a validation in create/update rejecting a
+reseller tier for an END_USER type. There is also currently NO update-path guard
+preventing a tier change from Individual to a reseller tier (or vice versa); the
+customer.update path accepts any valid tierId. Not needed for MVP; note it if
+pricing-integrity-on-edit becomes a concern.
+
+### Reseller customer with no tier is still a latent dead-end (Prompt 50a)
+
+The fix auto-assigns Individual to END_USER customers only. A RESELLER customer
+created with no tier still gets tierId = null (resellers must explicitly choose
+Standard or Volume), so it remains unsaleable until a tier is set, exactly as
+before. This is intended (there is no sensible default reseller tier to pick), but
+it is the same class of latent trap the audit flagged for individuals: creation
+succeeds, the first SO fails at "has no tier". The frontend should require a tier
+selection for RESELLER customers at creation. Backend leaves it nullable by design.
+
 ### Supplier warranty claim: separate entity, ADJUSTMENT movement, no claim lifecycle yet (Prompt 48a)
 
 Persistence: chose a SEPARATE SupplierWarrantyClaim entity over extending Return.
@@ -816,6 +840,33 @@ partial. Documented as a historical artifact; new entries post-fix carry
 beforeState correctly per the convention.
 
 ## Done (this session)
+
+### Individual customer tier (Prompt 50a)
+
+Closes the audit's launch blocker: END_USER (individual) customers were dead-end
+records (creatable but unsaleable, since only reseller tiers existed and SO
+creation hard-requires a tier with a price entry).
+
+PRE-DEPLOY: data migration `20260626134823_individual_customer_tier` inserts the
+Individual tier (id seed-tier-individual, ON CONFLICT DO NOTHING) and backfills
+existing END_USER null-tier customers onto it (with an updatedAt bump so the sync
+mirror sees it). Snapshot prod before the auto-deploy. Idempotent and a near-no-op
+in greenfield production (no END_USER customers yet); in dev it backfilled 11.
+
+- Seed: Individual tier upsert added alongside the two reseller tiers. NO
+  Individual price-list entries seeded by design (prices set via the price-list UI;
+  preserves "no PriceListEntry = no sale" for every tier).
+- `CustomersService.create`: when type is END_USER and no tierId is given,
+  auto-assigns `INDIVIDUAL_TIER_ID` ('seed-tier-individual', exported constant). An
+  explicit tierId always wins; a RESELLER with no tier stays null (unchanged).
+- No structural schema change (tierId stays nullable, CustomerTier unchanged), no
+  new permission (customer.manage/customer.create cover it), no new audit action
+  (customer.create already captures the assigned tierId in afterState).
+
+Verified by `verify-50a.ts` (20/20, all 16 probes A-P including the
+no-price-still-404s semantic, an Individual-priced sale succeeding at the
+Individual price, a backfilled customer transacting, and concurrent mixed-type
+creates), since deleted.
 
 ### Supplier warranty claim return disposition (Prompt 48a)
 
