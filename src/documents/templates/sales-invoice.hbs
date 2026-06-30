@@ -13,7 +13,7 @@
       <div class="a-org">
         <div class="nm">{{company.name}}</div>
         {{{company.addressHtml}}}<br/>
-        Tel: {{company.tel}} &nbsp;&middot;&nbsp; {{company.email}}<br/>
+        {{#if company.tel}}Tel: {{company.tel}} &nbsp;&middot;&nbsp; {{/if}}{{company.email}}<br/>
         RC No: {{company.rcNo}} &nbsp;&middot;&nbsp; TIN: {{company.tin}}
       </div>
     </div>
@@ -93,7 +93,7 @@
     </div>
     <div class="a-terms">
       <span>All prices are inclusive of applicable charges. <span class="a-stamp">{{terms.stamp}}</span><br/>{{terms.note}}</span>
-      <span style="text-align:right; white-space:nowrap;">Bank: {{bank.name}}<br/>Acct Name: {{bank.accountName}}<br/>Acct No: {{bank.accountNumber}} &middot; Sort: {{bank.sortCode}}</span>
+      <span style="text-align:right; white-space:nowrap;">Bank: {{bank.name}}<br/>Acct Name: {{bank.accountName}}<br/>Acct No: {{bank.accountNumber}}{{#if bank.sortCode}} &middot; Sort: {{bank.sortCode}}{{/if}}</span>
     </div>
   </div>
 </div>

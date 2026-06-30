@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   CounterpartyStatus,
   MovementReferenceType,
@@ -37,10 +38,22 @@ const RESOLVE_DISPOSITIONS: ReturnDisposition[] = [
 
 @Injectable()
 export class ReturnsService {
+  /**
+   * Customer warranty term in months, loaded from config (CUSTOMER_WARRANTY_MONTHS,
+   * default 12). Wired but not yet consumed: when the warranty-validity hook in
+   * `resolve` is activated, it reads this to decide whether a claim falls inside
+   * the customer warranty window. See the WARRANTY HOOK note in `resolve`.
+   */
+  private readonly customerWarrantyMonths: number;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
-  ) {}
+    config: ConfigService,
+  ) {
+    const months = Number(config.get<string>('CUSTOMER_WARRANTY_MONTHS'));
+    this.customerWarrantyMonths = Number.isFinite(months) && months > 0 ? months : 12;
+  }
 
   findAll() {
     return this.prisma.return.findMany({
@@ -177,7 +190,8 @@ export class ReturnsService {
     // change). This prompt adds the SUPPLIER_WARRANTY_CLAIM disposition but does
     // NOT activate the hook: whether a claim is in-warranty is not checked here.
     // When the hook lands, the validity check belongs HERE, informing or
-    // constraining the disposition. Intentionally a no-op for now.
+    // constraining the disposition, comparing the unit's sale date against
+    // `this.customerWarrantyMonths`. Intentionally a no-op for now.
 
     const isClaim =
       dto.disposition === ReturnDisposition.SUPPLIER_WARRANTY_CLAIM;

@@ -38,30 +38,35 @@ export interface CompanyProfile {
 }
 
 const DEFAULT_BANKS: Record<ProductType, BankAccount> = {
-  // 3-wheeler keeps the previously-configured single account so existing
-  // tricycle documents are unchanged.
+  // 3-wheeler: Globus Bank account (the real tricycle collection account,
+  // supplied by Theresa for launch). Sort code is intentionally blank: Nigerian
+  // inter-bank (NIP) transfers route on bank name + account number alone, and
+  // the bank did not supply one. Documents omit the sort line when it is empty.
   THREE_WHEELER: {
-    bankName: 'Zenith Bank PLC',
-    accountName: 'Enviable Tricycle Auto Parts Ltd',
-    accountNumber: '1014772390',
-    sortCode: '057-Apapa',
+    bankName: 'Globus Bank',
+    accountName: 'Enviable Tricycle Auto Parts Limited Account 2',
+    accountNumber: '1000503348',
+    sortCode: '',
   },
-  // 2-wheeler PLACEHOLDER account; replace before launch.
+  // 2-wheeler: Globus Bank account, distinct registered name and number.
   TWO_WHEELER: {
-    bankName: 'PLACEHOLDER Bank PLC (2-wheeler)',
-    accountName: 'Enviable Tricycle Auto Parts Ltd',
-    accountNumber: '0000000000',
-    sortCode: '000-000',
+    bankName: 'Globus Bank',
+    accountName: 'Enviable Tricycles Auto Parts Ltd - 2 Wheeler',
+    accountNumber: '1000579033',
+    sortCode: '',
   },
 };
 
 const DEFAULTS = {
-  name: 'Enviable Tricycle Auto Parts Ltd',
-  addressLines: ['Plot 14B, Apapa-Oshodi Expressway, Apapa, Lagos State, Nigeria'],
-  tel: '+234 803 555 0142',
-  email: 'sales@enviabletricycle.com',
-  rcNo: '1748392',
-  tin: '21845-0001',
+  name: 'Enviable Tricycle Auto Parts Limited',
+  addressLines: ['52 Saka Tinubu Street, VI Lagos'],
+  // Tel is intentionally blank: no company phone was supplied for launch, and a
+  // fabricated number must not print on a tax document. Documents omit the Tel
+  // line when it is empty; set INVOICE_COMPANY_TEL once a real line exists.
+  tel: '',
+  email: 'info@enviabletricycle.com',
+  rcNo: '6987445',
+  tin: '31405903-0001',
 };
 
 export function loadCompanyProfile(config: ConfigService): CompanyProfile {

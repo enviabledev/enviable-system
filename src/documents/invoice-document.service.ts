@@ -223,8 +223,13 @@ export class InvoiceDocumentService {
       },
       from: {
         name: this.company.name,
+        // Email and (when present) Tel sit alongside RC/TIN so the PI carries
+        // the same issuer identity as the tax invoice: name, address, contact,
+        // RC and TIN. Blank tel is dropped by the falsy filter in addressHtml.
         addressHtml: addressHtml([
           ...this.company.addressLines,
+          this.company.tel ? `Tel: ${this.company.tel}` : null,
+          `Email: ${this.company.email}`,
           `RC ${this.company.rcNo} · TIN ${this.company.tin}`,
         ]),
       },
@@ -524,9 +529,13 @@ export class InvoiceDocumentService {
       `<b>${this.escape(bank.bankName)}</b>`,
       `Account Name: ${this.escape(bank.accountName)}`,
       `Account Number: ${this.escape(bank.accountNumber)}`,
-      `Sort Code: ${this.escape(bank.sortCode)}`,
+      // Sort code is omitted when blank: Nigerian NIP transfers do not need it,
+      // and the Globus accounts were supplied without one.
+      bank.sortCode ? `Sort Code: ${this.escape(bank.sortCode)}` : null,
       'Please quote the PI number on your transfer and send proof of payment to confirm your order.',
-    ].join('<br/>');
+    ]
+      .filter((line): line is string => line != null)
+      .join('<br/>');
   }
 
   private proformaPaymentHtml(

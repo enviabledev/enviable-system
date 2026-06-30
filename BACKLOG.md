@@ -1087,3 +1087,59 @@ threading it through to `audit.write` as `beforeState`. Six probes
 for update and delete (probe 1, 2), null for create (probe 3), no audit on
 handler failure (probe 4), per-entity isolation (probe 5), 100%/0% counts
 across the suite (probe 6).
+
+### Company identity and bank configuration (Prompt 51)
+
+Theresa's real company identity and bank-routing values landed. The work was
+configuration wiring, not template surgery: the env-driven scaffolding from 45a
+already existed (`company-profile.ts`, `INVOICE_*` vars keyed per wheeler type),
+so the change was correcting the stale placeholder DEFAULTS to the live values
+(name, address, email, RC `6987445`, TIN `31405903-0001`) and the two Globus
+accounts (3W `1000503348`, 2W `1000579033`, replacing the `0000000000`
+placeholder). Defaults were updated alongside env so a fresh environment (and the
+tests) render correctly without any env set; production still sets the same vars
+in SSM as belt-and-suspenders.
+
+Config source chosen: env vars (the existing mechanism), not a config table. For
+MVP this is the right call (no UI, no per-tenant variation, operator-correctable
+without a deploy). A DB-backed company-profile table is the eventual home (see
+the older "invoice document fields" note); when it lands it supersedes
+`loadCompanyProfile` with no template changes.
+
+FIRS-compliance observations:
+- Sales invoice (the actual tax document) already showed name/address/Tel/email
+  in the header and `RC No:`/`TIN:` clearly labelled below it. That is the
+  prominent, labelled placement FIRS expects; left as-is.
+- Sales PI previously rendered RC/TIN embedded in the "From" address block but
+  NOT email. Added email (and Tel when present) to that block so the PI carries
+  the same issuer identity. The PI footer still stamps "not a tax invoice", so
+  header-prominence of TIN/RC matters less there than on the invoice.
+
+Two real-world data gaps surfaced, both handled by omitting the line rather than
+fabricating data on a tax document:
+- No sort code for either Globus account (Nigerian NIP transfers route on bank
+  name + account number alone). `sortCode` defaults to empty; both templates and
+  the PI payment block now render the sort line only when non-empty.
+- No company phone supplied. The old default `+234 803 555 0142` was fabricated;
+  `tel` now defaults to empty and the Tel line is conditional. ACTION: get a real
+  company phone from Theresa and set `INVOICE_COMPANY_TEL`, or confirm the
+  invoice should carry no phone.
+
+UX note on account-name casing: the 3W account name uses "Tricycle … Limited"
+while the 2W uses "Tricycles … Ltd" (plural/abbreviated). These are reproduced
+verbatim from the bank's registered names (they must match for the customer to
+trust the transfer); the inconsistency is the bank's, not ours. The en dash in
+the supplied 2W name was normalised to a hyphen (project no-dash rule; reads
+identically and banks match account names loosely).
+
+Warranty: `CUSTOMER_WARRANTY_MONTHS` (default 12) is now loaded into
+`ReturnsService.customerWarrantyMonths`, ready for the prompt-40 warranty hook.
+The hook in `resolve` stays a no-op (no warranty-validity gate on dispositions)
+until Theresa confirms the SUPPLIER warranty term too; activating it then is a
+local change in `resolve`, comparing the unit's sale date against this field.
+
+Verified with `verify-51.ts` (40/40 assertions across both wheeler types for PI
+and invoice: company identity present and correct, TIN/RC labelled, correct
+Globus account per type, placeholder gone, no fabricated Tel, no empty sort line,
+warranty term loadable with default and override, TIN overridable via env),
+since deleted.
